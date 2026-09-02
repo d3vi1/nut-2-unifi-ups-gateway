@@ -1,0 +1,13 @@
+.git
+.github
+AGENTS.md
+AGENTS-local.md
+docs
+deploy
+dist
+state
+**/.env
+**/secrets
+coverage.out
+*.pcap
+*.pcapng

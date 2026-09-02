@@ -1,0 +1,19 @@
+# Build and test output
+/bin/
+/coverage.out
+/dist/
+*.test
+
+# Local state and site-specific configuration
+/state/
+.env
+**/.env
+**/secrets/
+/AGENTS-local.md
+*.pcap
+*.pcapng
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

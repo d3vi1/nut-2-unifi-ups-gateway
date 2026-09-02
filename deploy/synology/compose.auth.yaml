@@ -1,0 +1,11 @@
+services:
+  gateway:
+    environment:
+      N2U_NUT_USERNAME: ${N2U_NUT_USERNAME:?set the read-only NUT username}
+      N2U_NUT_PASSWORD_FILE: /run/secrets/nut_password
+    secrets:
+      - nut_password
+
+secrets:
+  nut_password:
+    file: ${N2U_NUT_PASSWORD_SECRET_FILE:?set an absolute path to the NUT password file}

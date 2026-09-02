@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a reproducible gateway defect without sensitive data
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not attach firmware, packet captures, credentials, auth keys, full
+        MAC addresses, serials, controller replies, or database exports.
+  - type: input
+    id: version
+    attributes:
+      label: Gateway version or image digest
+    validations:
+      required: true
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Architecture
+      options: [amd64, arm64, arm/v7, "386"]
+    validations:
+      required: true
+  - type: input
+    id: nut
+    attributes:
+      label: NUT server and driver versions
+    validations:
+      required: true
+  - type: input
+    id: unifi
+    attributes:
+      label: UniFi Network version
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: Redact all identities and secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I did not add or test an out-of-tree power-write path on a live load.
+          required: true
+        - label: I removed all secrets and device identifiers.
+          required: true

@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.go text diff=golang
+*.md text diff=markdown
+*.yml text
+*.yaml text
+Dockerfile text
+LICENSE text

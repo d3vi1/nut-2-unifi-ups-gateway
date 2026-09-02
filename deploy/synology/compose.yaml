@@ -1,0 +1,54 @@
+name: nut-2-unifi-ups-gateway
+
+services:
+  gateway:
+    image: ${N2U_IMAGE:-ghcr.io/d3vi1/nut-2-unifi-ups-gateway:0.1.0-alpha.1}
+    container_name: nut-2-unifi-ups-gateway
+    network_mode: host
+    user: "65532:65532"
+    read_only: true
+    restart: unless-stopped
+    init: false
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 20s
+    volumes:
+      - state:/var/lib/n2u
+    environment:
+      N2U_NUT_ADDRESS: ${N2U_NUT_ADDRESS:-127.0.0.1:3493}
+      N2U_NUT_UPS: ${N2U_NUT_UPS:-ups}
+      N2U_NUT_TIMEOUT: ${N2U_NUT_TIMEOUT:-5s}
+      N2U_NUT_ALLOW_INSECURE_REMOTE: ${N2U_NUT_ALLOW_INSECURE_REMOTE:-false}
+      N2U_UNIFI_MODEL: ${N2U_UNIFI_MODEL:-USWDA26}
+      N2U_UNIFI_VERSION: ${N2U_UNIFI_VERSION:-1.6.1}
+      N2U_INFORM_URL: ${N2U_INFORM_URL:-http://unifi:8080/inform}
+      N2U_INFORM_INTERVAL: ${N2U_INFORM_INTERVAL:-10s}
+      N2U_INFORM_TIMEOUT: ${N2U_INFORM_TIMEOUT:-10s}
+      N2U_DISCOVERY_INTERVAL: ${N2U_DISCOVERY_INTERVAL:-30s}
+      N2U_POLL_INTERVAL: ${N2U_POLL_INTERVAL:-5s}
+      N2U_STALE_AFTER: ${N2U_STALE_AFTER:-20s}
+      N2U_DEVICE_HOSTNAME: ${N2U_DEVICE_HOSTNAME:-nut-2-unifi-ups-gateway}
+      N2U_DEVICE_MAC: ${N2U_DEVICE_MAC:-}
+      N2U_DEVICE_SERIAL: ${N2U_DEVICE_SERIAL:-}
+      N2U_DEVICE_IP: ${N2U_DEVICE_IP:-}
+      N2U_STATE_FILE: /var/lib/n2u/state.json
+      N2U_HEALTH_ADDRESS: ${N2U_HEALTH_ADDRESS:-127.0.0.1:9199}
+      N2U_LOG_LEVEL: ${N2U_LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "/nut-2-unifi-ups-gateway", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  state:
