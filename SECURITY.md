@@ -6,9 +6,14 @@ Until the first stable release, only the latest tagged release is supported.
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability-reporting feature for this repository. Do
-not open a public issue containing credentials, inform auth keys, private IP
-addresses, device identifiers, controller responses, or power-control steps.
+While this repository is private, contact the owner through the private channel
+by which you were granted access. Do not put credentials, inform auth keys,
+private IP addresses, device identifiers, controller responses, or
+power-control steps in an issue.
+
+Before the repository is made public, its owner must enable GitHub private
+vulnerability reporting and update the security contact link. GitHub currently
+offers that feature only for public repositories.
 
 Include the affected version, architecture, deployment mode, impact, and a
 minimal redacted reproducer. Do not test outlet-control findings on equipment

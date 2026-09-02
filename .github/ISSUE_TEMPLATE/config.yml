@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/d3vi1/nut-2-unifi-ups-gateway/security/advisories/new
-    about: Report vulnerabilities privately; never include secrets in a public issue.
+    url: https://github.com/d3vi1/nut-2-unifi-ups-gateway/security/policy
+    about: Follow the private-repository disclosure policy; never include secrets in an issue.
