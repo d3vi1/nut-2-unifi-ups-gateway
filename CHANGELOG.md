@@ -48,6 +48,8 @@ All notable changes are documented here. The project follows
   checksum-verified Synology bundle whose generated `.env` uses that exact OCI
   digest. Compose fails closed if `N2U_IMAGE` is absent instead of pulling a
   mutable fallback tag.
+- The Dockerfile frontend is pinned to the reviewed BuildKit 1.12.1 content
+  digest so parser selection cannot drift behind a mutable syntax reference.
 
 ## 0.1.0-alpha.1 - 2026-09-02
 

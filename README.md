@@ -193,8 +193,10 @@ Some parts of the panel belong to the selected carrier rather than to NUT:
   value.
 - **Power Cycle on Restore** is not NUT `AUTO_RELAY`. NUT has no exact persistent
   equivalent, so this writable control is not advertised in v0.9.0.
-- `ups.beeper.status` is preserved when available, but it does not authorize a
-  write. The **Power-Off Buzzer** control stays hidden in this read-only release.
+- Exact `enabled` or `disabled` values from `ups.beeper.status` are preserved as
+  read-only telemetry when available. The gateway neither advertises nor
+  executes the writable **Power-Off Buzzer** capability; Network may still
+  render that carrier UI.
 
 ## Troubleshooting
 
