@@ -20,6 +20,10 @@ import (
 const currentVersion = 1
 const maxStateBytes = 1 << 20
 
+// MaxGCMReplayNonces bounds both the persisted and in-memory replay window.
+// Nonces are scoped to the auth-key/mode epoch represented by Adoption.
+const MaxGCMReplayNonces = 128
+
 type State struct {
 	Version  int      `json:"version"`
 	Identity Identity `json:"identity"`
@@ -35,11 +39,12 @@ type Identity struct {
 }
 
 type Adoption struct {
-	AuthKey    string `json:"auth_key"`
-	InformURL  string `json:"inform_url"`
-	CfgVersion string `json:"cfg_version"`
-	Adopted    bool   `json:"adopted"`
-	UseAESGCM  bool   `json:"use_aes_gcm"`
+	AuthKey         string   `json:"auth_key"`
+	InformURL       string   `json:"inform_url"`
+	CfgVersion      string   `json:"cfg_version"`
+	Adopted         bool     `json:"adopted"`
+	UseAESGCM       bool     `json:"use_aes_gcm"`
+	GCMReplayNonces []string `json:"gcm_replay_nonces,omitempty"`
 }
 
 // LoadOrCreate loads path or initializes it with a random locally-administered
@@ -159,6 +164,28 @@ func (s State) Validate() error {
 	}
 	if !s.Adoption.Adopted && s.Adoption.UseAESGCM {
 		return errors.New("pending adoption state cannot use AES-GCM")
+	}
+	if len(s.Adoption.GCMReplayNonces) > MaxGCMReplayNonces {
+		return errors.New("GCM replay window exceeds limit")
+	}
+	if !s.Adoption.UseAESGCM && len(s.Adoption.GCMReplayNonces) != 0 {
+		return errors.New("GCM replay window requires AES-GCM")
+	}
+	seenNonces := make(map[[16]byte]struct{}, len(s.Adoption.GCMReplayNonces))
+	for _, encodedNonce := range s.Adoption.GCMReplayNonces {
+		if len(encodedNonce) != 32 {
+			return errors.New("invalid GCM replay window entry")
+		}
+		decodedNonce, err := hex.DecodeString(encodedNonce)
+		if err != nil || len(decodedNonce) != 16 {
+			return errors.New("invalid GCM replay window entry")
+		}
+		var nonce [16]byte
+		copy(nonce[:], decodedNonce)
+		if _, duplicate := seenNonces[nonce]; duplicate {
+			return errors.New("duplicate GCM replay window entry")
+		}
+		seenNonces[nonce] = struct{}{}
 	}
 	return nil
 }

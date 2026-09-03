@@ -8,6 +8,8 @@ credential, or device identity is distributed by this repository.
 
 - **PROVEN**: observed in the exact firmware/controller build or an executed
   interoperability test.
+- **OBSERVED**: visible runtime or UI state that establishes the displayed
+  result, but not the private protocol mechanism that produced it.
 - **CANDIDATE**: implemented from corroborated public protocol research but not
   yet accepted by the target controller.
 - **UNKNOWN**: unresolved and not advertised as supported.
@@ -83,25 +85,105 @@ Controller code proves:
 - L3-inform discovery without the SSH adoption path;
 - pairing/unpairing and managed-console shutdown orchestration.
 
-Live tests against this exact target also establish an important negative
-boundary. Network received and decrypted TNBU v0/CBC requests, passed JSON,
-payload-version, and header/payload-MAC validation, then returned HTTP 404 from
-its unknown-device dispatch. No targeted `device` or `pending_device` record
-was created. The same result held after all of these one-variable checks:
+Historical live tests against this exact Network 10.6.101 target also establish
+an important build-specific negative boundary. Network received and decrypted
+TNBU v0/CBC requests, passed JSON, payload-version, and header/payload-MAC
+validation, then returned HTTP 404 from its unknown-device dispatch. No
+targeted `device` or `pending_device` record was created. The same result held
+after all of these one-variable checks:
 
 - the fixed firmware profile GUID and coherent `hash_id`/`anon_id`;
 - the firmware HTTP header fingerprint;
 - a collision-checked Ubiquiti OUI;
 - a unique macvlan IPv4/MAC pair with verified UDP/10001 and TCP/8080 traffic.
 
-The active controller catalogs contain the `USWDA26`/`0xDA26` definition and
-exact `1.6.1.413` firmware. The unresolved gate is therefore current
-controller-private unknown-device/model dispatch, not TNBU decryption or the
-known UPS identity fields. Further payload guessing is explicitly out of
-scope; resolving it requires temporary controller DEBUG evidence or a real UPS
-capture on the same Network release.
+That controller's catalogs contained the `USWDA26`/`0xDA26` definition and exact
+`1.6.1.413` firmware. The result is retained as historical evidence about that
+build, not a claim about every Network release.
 
-## Exact eight-outlet profile
+On 2026-09-03, Network 10.6.102 on UniFi OS 5.1.31 showed the gateway-projected UPS
+as adopted and showed safe-shutdown pairing with one NVR and one gateway. This
+is **OBSERVED** UI evidence of registration and pairing state. It does not by
+itself prove which private dispatch condition changed, demonstrate a completed
+shutdown, or validate the new dynamic-topology projection.
+
+A literal `model="NUTUPS"` is not emitted. No such model is present in the
+examined stock registry, and the exact controller's unknown-device path rejects
+unrecognized identities. The implementation retains `USWDA26` or `USPDA2C` as
+a recognized carrier while allowing NUT, rather than that carrier, to describe
+outlet topology.
+
+Read-only inspection of that installed frontend and controller object also
+established:
+
+- `USWDA26` has static catalog categories `standard:[1,2,3,4]`,
+  `surge:[5,6,7,8]`, plus RJ45 Surge Out/In entries. The battery/surge icons and
+  blue network-surge jacks do not come from dynamic `outlet_caps`.
+- The heading **Surge / Power Utilization** is hard-coded for this model. It
+  consumes `device_total_power_output` and `device_total_power_budget`; missing
+  budget becomes zero, and output below the model's 100 W display floor becomes
+  the `<100` range seen in the UI.
+- The details panel formats `device_output_current` to two decimals but does not
+  create it. On the live Synology source, `output.current=1.00` is the exact
+  precision exposed by the APC `snmp-ups` driver.
+- Device `smart_power_caps` bit `0x2` gates **Power Cycle on Restore**, bit `0x4`
+  gates **Power-Off Buzzer**, bit `0x8` gates safe-shutdown/cycle timing, and bit
+  `0x10` gates EPO. This namespace is separate from `outlet_caps`, where
+  `AUTO_RELAY` happens to be `0x4`.
+- `nut_server` has the controller shape `enabled`, `id`, `port`,
+  `credential_required`, `username`, and `password`. Its ID is the UPS name
+  served by NUT protocol `LIST UPS`, not the opaque telemetry variable `ups.id`.
+
+The current site provided additional **OBSERVED** read-only evidence: the NUT
+service was reachable from the controller host at the emulated device address
+on TCP/3493 and `LIST UPS` returned the served name `ups`; the separate
+`ups.id` value was `UPS-Rack`. This proves that one deployment can truthfully
+opt in to an `ups:3493` advertisement. It does not prove that every local or
+remote NUT source is reachable at the emulated device address, nor that Network
+accepts a device-originated `nut_server` object without provisioning feedback.
+
+## Dynamic NUT outlet topology
+
+The dynamic mapping deliberately separates observed NUT facts from UniFi
+compatibility choices:
+
+| NUT input | Projected behavior | Evidence status |
+|---|---|---|
+| valid positive `outlet.count` | exact observed outlet count | **CANDIDATE** for live Network acceptance |
+| equal `outlet.N.groupid` values | same deterministic positive `relay_group` | **CANDIDATE** |
+| missing `outlet.N.groupid` | unique singleton `relay_group` | conservative **CANDIDATE** fallback |
+| exact `outlet.group.G.id` match with consistent optional count | associates group metadata/status/switchability | evidence-bound **CANDIDATE** mapping |
+| unambiguous USB `outlet.N.type` or `.designator` | `0x20000` physical-class bit | conservative **CANDIDATE** mapping |
+| other or absent type/designator | `0x10000` AC-compatible bit | interoperability **CANDIDATE**, not a native-type assertion |
+| affirmative outlet, matched-group, or global NUT `switchable=yes` | `HAS_RELAY` (`0x00001`), with outlet precedence | evidence-bound **CANDIDATE** mapping |
+| direct outlet current, real-power, or apparent-power key | `POWER_METER` (`0x00002`) | evidence-bound **CANDIDATE** mapping |
+
+NUT outlet type and designator are opaque; USB is recognized only from an
+unambiguous value, not from a name, description, or guessed connector taxonomy.
+`AUTO_RELAY` (`0x00004`) and the unresolved low-order bit `0x00008` are never
+inferred, and no physical `button_group` is invented. Voltage and power factor
+alone do not establish `POWER_METER`. Device-level and outlet-group electrical
+values are never spread across outlets, so a real UPS total cannot appear as
+fabricated identical per-outlet amperage. Shared relay states are emitted
+consistently across group members; conflicts make the state unknown.
+
+UPS-wide real-power mapping is unit-preserving: `ups.realpower` is output W and
+`ups.realpower.nominal` is budget W. NUT defines `ups.power` and
+`ups.power.nominal` as VA, so they are not sent in fields Network labels as
+watts. `ups.load` and `output.current` are not used to invent power. Standard
+`ups.beeper.status` values are preserved, but the `muted` state has no lossless
+UniFi boolean representation.
+
+When no valid `outlet.count` exists, the gateway reports a conservative
+AC-compatible layout: eight outlets in two 4+4 groups for `USWDA26`, or nine
+singleton groups for `USPDA2C`. It omits all relay, automatic-relay, metering,
+button, and per-outlet-state capabilities because NUT did not establish them.
+The former is the current path for the Synology APC driver, whose live NUT
+snapshot contains no `outlet.*` variables. A topology-capable NUT driver and a
+controlled Network acceptance test are still required to promote the dynamic
+path beyond **CANDIDATE**.
+
+## Exact eight-outlet firmware reference
 
 `USWDA26` is a local selector. Its controller-facing inform identity is
 `model="UPS26"`, `model_display="UPS26"`, version `1.6.1.413`, required version
@@ -119,14 +201,33 @@ hardware `UPS 2U`, sysid `0xDA26`, full build in TLV `0x03`, `1.6.1.413` in TLV
 `0x16`, profile UUID `317875ca-ad3e-47e9-9430-47e3e2e1ab3d`, and the observed
 `0x2c=3`/`0x2d=2` fields.
 
+These masks, button fields, and group assignments describe the genuine UPS26
+firmware reference only. The runtime fallback retains the structural group
+count but emits AC-compatible rows without those unsupported capabilities. The
+`USPDA2C` firmware reference similarly remains separate from its conservative
+nine-singleton runtime fallback. Neither fallback constrains topology that NUT
+actually reports.
+
 ## Power-control evidence
 
 Firmware `relayctl` entries contain a 1-based index plus delay-to-off and
-delay-to-on in minutes. Each entry schedules an independent OFF→ON cycle; an
-array is processed sequentially without atomic prevalidation or rollback. It
-does not read `relay_state`. `system_cfg` outlet relay keys change desired
-configuration only and do not prove immediate actuation. The gateway therefore
-parses `relayctl` but ships no NUT write API.
+delay-to-on in minutes, but the analyzed UPS26 handler does not use index,
+group, or `relay_state` to select an outlet. Its delay path performs a global
+UPS power cycle. `system_cfg` outlet relay keys change desired configuration
+only and do not prove immediate actuation. The gateway therefore parses
+`relayctl` but ships no NUT write API.
+
+Firmware and controller analysis further prove that **Power Cycle on Restore**
+is global `smart_power_caps=0x2`, independent of outlet `AUTO_RELAY`. The Pro
+firmware persists an enable flag and 60–600 second recovery delay, arms selected
+outlets during safe shutdown, and cycles currently-on armed outlets after AC
+returns. NUT has no exact persistent setting: `ups.start.auto`,
+`ups.delay.start`, `shutdown.return`, and `load.cycle` have distinct semantics
+and the latter two are destructive one-shot commands. V0.9.0 therefore uses a
+fail-closed allowlist: safe-shutdown timing only (`0x08`), plus NUT information
+access for an explicit server advertisement (`0x09`). Genuine mask bits `0x40`
+and `0x80` have no identified consumer in the examined controller corpus and
+remain reference evidence rather than operational claims.
 
 ## Projection status
 
@@ -134,10 +235,13 @@ parses `relayctl` but ships no NUT write API.
 |---|---|
 | Read NUT variables with bounded protocol handling | **PROVEN** by automated fake-server tests |
 | Normalize standard UPS status/battery/load fields | **PROVEN** by unit tests |
+| Map direct nominal real power and preserve standard beeper states | **PROVEN** by unit tests; current APC driver exposes neither value |
 | Encode/decode uncompressed TNBU v0 CBC and GCM packets | **PROVEN** by exact-firmware analysis and codec tests; live controller acceptance tracked separately |
-| Emit the exact `USWDA26` discovery shape | **PROVEN** on wire to the target UDM; controller registration still unresolved |
+| Emit the exact `USWDA26` discovery shape | **PROVEN** on wire to the target UDM; registration evidence is build-specific and listed separately |
 | Reach and pass TNBU/JSON/MAC parsing on Network 10.6.101 | **PROVEN**; controller returns unknown-device HTTP 404 |
-| Adopt and remain connected through `/inform` | **UNKNOWN** on Network 10.6.101; zero device/pending records after controlled A/B tests |
+| Adopt and pair through `/inform` | **OBSERVED** in the 2026-09-03 UI on the then-current configuration; the older 10.6.101 test remained a 404 |
+| Project NUT-observed outlet count, groups, USB type, and meter capability | **CANDIDATE**; automated coverage only, no topology-capable live source acceptance yet |
+| Advertise an independently verified NUT service at the emulated device IP | **CANDIDATE**, explicit opt-in only; default disabled |
 | Trigger UniFi OS shutdown policy from NUT battery state | **BLOCKED_EXTERNAL** until a controlled outage simulation |
 | Execute any controller-requested outlet/zone operation | deliberately unsupported in v1; no NUT write API |
 
@@ -145,6 +249,7 @@ parses `relayctl` but ships no NUT write API.
 
 Wire-format behavior was independently compared against:
 
+- [Network UPS Tools variable namespace](https://github.com/networkupstools/nut/blob/master/docs/nut-names.txt)
 - [jamesbraid/unifi-emu](https://github.com/jamesbraid/unifi-emu) (MIT)
 - [amd989/unifi-gateway](https://github.com/amd989/unifi-gateway) (MIT)
 - [jeffreykog/unifi-inform-protocol](https://github.com/jeffreykog/unifi-inform-protocol)

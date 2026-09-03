@@ -2,6 +2,7 @@ package inform
 
 import (
 	"bytes"
+	"crypto/aes"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -97,8 +98,13 @@ func TestGCMNonceMonotonicAndAuthenticated(t *testing.T) {
 	if binary.BigEndian.Uint64(a[24:32]) != 1 || binary.BigEndian.Uint64(b[24:32]) != 2 {
 		t.Fatalf("nonces are not monotonic: %x %x", a[16:32], b[16:32])
 	}
-	if _, err := Decode(a, DefaultKey); err != nil {
+	decoded, err := Decode(a, DefaultKey)
+	if err != nil {
 		t.Fatal(err)
+	}
+	nonce, ok := decoded.AuthenticatedGCMNonce()
+	if !ok || !bytes.Equal(nonce[:], a[16:32]) {
+		t.Fatalf("authenticated GCM nonce = %x, %t; want header nonce", nonce, ok)
 	}
 	if got := binary.BigEndian.Uint16(a[14:16]); got != flagEncrypted|flagGCM {
 		t.Fatalf("GCM flags = %#x, want firmware-required %#x", got, flagEncrypted|flagGCM)
@@ -267,11 +273,33 @@ func TestKeyErrorsDoNotEchoInput(t *testing.T) {
 }
 
 func TestPacketFormattingRedactsMACAndPayload(t *testing.T) {
-	p := Packet{MAC: codecTestMAC, PacketVersion: PacketVersion, Payload: []byte("do-not-log")}
+	p := Packet{
+		MAC: codecTestMAC, PacketVersion: PacketVersion, Payload: []byte("do-not-log"),
+		authenticatedGCMNonce: [aes.BlockSize]byte{0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
+		hasGCMNonce:           true,
+	}
 	for _, formatted := range []string{fmt.Sprintf("%v", p), fmt.Sprintf("%+v", p), fmt.Sprintf("%#v", p)} {
-		if strings.Contains(formatted, "do-not-log") || strings.Contains(formatted, "17 34 51") {
+		if strings.Contains(formatted, "do-not-log") || strings.Contains(formatted, "17 34 51") || strings.Contains(formatted, "deadbeef") || strings.Contains(formatted, "222 173 190 239") {
 			t.Fatalf("formatted packet leaked content: %q", formatted)
 		}
+	}
+}
+
+func TestCBCDecodeDoesNotExposeIVAsGCMNonce(t *testing.T) {
+	encoder, err := newEncoder(bytes.NewReader(make([]byte, 24)), DefaultCodecLimits(), PacketVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := encoder.Encode(Packet{MAC: codecTestMAC, Payload: []byte(`{}`)}, DefaultKey, ModeCBC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(wire, DefaultKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonce, ok := decoded.AuthenticatedGCMNonce(); ok || nonce != [aes.BlockSize]byte{} {
+		t.Fatalf("CBC packet exposed a GCM nonce: %x, %t", nonce, ok)
 	}
 }
 

@@ -5,6 +5,7 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -53,6 +54,7 @@ type Gateway struct {
 	started       time.Time
 	mac           [6]byte
 	informMu      sync.Mutex
+	gcmReplay     gcmReplayWindow
 
 	mu            sync.RWMutex
 	persistent    state.State
@@ -61,6 +63,151 @@ type Gateway struct {
 	upstreamOK    bool
 	lastInform    time.Time
 	nextDiscovery uint32
+}
+
+// ErrControllerResponseReplay is returned after a valid GCM envelope reuses a
+// nonce already accepted in the active auth-key/mode epoch. It deliberately
+// carries neither the nonce nor key material.
+var ErrControllerResponseReplay = errors.New("gateway rejected a replayed controller response")
+
+type gcmReplayEpoch struct {
+	keyDigest [sha256.Size]byte
+	useGCM    bool
+}
+
+// gcmReplayWindow is accessed only while informMu is held. The recent window
+// bounds all accepted responses; the protected window contains only responses
+// that changed persistent adoption state. Routine noops therefore cannot evict
+// rollback protection before the same number of genuine state transitions.
+type gcmReplayWindow struct {
+	epoch          gcmReplayEpoch
+	initialized    bool
+	recentOrder    [][16]byte
+	recentSeen     map[[16]byte]struct{}
+	protectedOrder [][16]byte
+	protectedSeen  map[[16]byte]struct{}
+}
+
+func newGCMReplayWindow(adoption state.Adoption) (gcmReplayWindow, error) {
+	epoch, err := gcmReplayEpochFor(adoption)
+	if err != nil {
+		return gcmReplayWindow{}, err
+	}
+	window := gcmReplayWindow{
+		epoch:          epoch,
+		initialized:    true,
+		recentSeen:     make(map[[16]byte]struct{}, state.MaxGCMReplayNonces),
+		protectedOrder: make([][16]byte, 0, len(adoption.GCMReplayNonces)),
+		protectedSeen:  make(map[[16]byte]struct{}, len(adoption.GCMReplayNonces)),
+	}
+	if !adoption.UseAESGCM {
+		return window, nil
+	}
+	if len(adoption.GCMReplayNonces) > state.MaxGCMReplayNonces {
+		return gcmReplayWindow{}, errors.New("gateway persistent replay window exceeds limit")
+	}
+	for _, encodedNonce := range adoption.GCMReplayNonces {
+		decodedNonce, err := hex.DecodeString(encodedNonce)
+		if err != nil || len(decodedNonce) != len([16]byte{}) {
+			return gcmReplayWindow{}, errors.New("gateway persistent replay window is invalid")
+		}
+		var nonce [16]byte
+		copy(nonce[:], decodedNonce)
+		if _, duplicate := window.protectedSeen[nonce]; duplicate {
+			return gcmReplayWindow{}, errors.New("gateway persistent replay window is invalid")
+		}
+		window.protectedOrder = append(window.protectedOrder, nonce)
+		window.protectedSeen[nonce] = struct{}{}
+	}
+	return window, nil
+}
+
+func gcmReplayEpochFor(adoption state.Adoption) (gcmReplayEpoch, error) {
+	key, err := hex.DecodeString(adoption.AuthKey)
+	if err != nil || len(key) != 16 {
+		return gcmReplayEpoch{}, errors.New("gateway adoption replay epoch is invalid")
+	}
+	epoch := gcmReplayEpoch{keyDigest: sha256.Sum256(key), useGCM: adoption.UseAESGCM}
+	clear(key)
+	return epoch, nil
+}
+
+func (w *gcmReplayWindow) sync(adoption state.Adoption) error {
+	epoch, err := gcmReplayEpochFor(adoption)
+	if err != nil {
+		return err
+	}
+	if w.initialized && w.epoch == epoch {
+		return nil
+	}
+	next, err := newGCMReplayWindow(adoption)
+	if err != nil {
+		return err
+	}
+	*w = next
+	return nil
+}
+
+func (w gcmReplayWindow) contains(nonce [16]byte) bool {
+	if _, ok := w.recentSeen[nonce]; ok {
+		return true
+	}
+	_, ok := w.protectedSeen[nonce]
+	return ok
+}
+
+func (w gcmReplayWindow) withAccepted(nonce [16]byte, protect bool) gcmReplayWindow {
+	next := gcmReplayWindow{
+		epoch:          w.epoch,
+		initialized:    w.initialized,
+		recentOrder:    append(make([][16]byte, 0, len(w.recentOrder)+1), w.recentOrder...),
+		recentSeen:     make(map[[16]byte]struct{}, len(w.recentSeen)+1),
+		protectedOrder: append(make([][16]byte, 0, len(w.protectedOrder)+1), w.protectedOrder...),
+		protectedSeen:  make(map[[16]byte]struct{}, len(w.protectedSeen)+1),
+	}
+	for accepted := range w.recentSeen {
+		next.recentSeen[accepted] = struct{}{}
+	}
+	for accepted := range w.protectedSeen {
+		next.protectedSeen[accepted] = struct{}{}
+	}
+	appendBoundedNonce(&next.recentOrder, next.recentSeen, nonce)
+	if protect {
+		appendBoundedNonce(&next.protectedOrder, next.protectedSeen, nonce)
+	}
+	return next
+}
+
+func appendBoundedNonce(order *[][16]byte, seen map[[16]byte]struct{}, nonce [16]byte) {
+	if _, duplicate := seen[nonce]; duplicate {
+		return
+	}
+	if len(*order) == state.MaxGCMReplayNonces {
+		delete(seen, (*order)[0])
+		copy(*order, (*order)[1:])
+		*order = (*order)[:len(*order)-1]
+	}
+	*order = append(*order, nonce)
+	seen[nonce] = struct{}{}
+}
+
+func (w gcmReplayWindow) encodedProtected() []string {
+	encoded := make([]string, len(w.protectedOrder))
+	for index, nonce := range w.protectedOrder {
+		encoded[index] = hex.EncodeToString(nonce[:])
+	}
+	return encoded
+}
+
+func (w gcmReplayWindow) rebased(adoption state.Adoption) (gcmReplayWindow, error) {
+	epoch, err := gcmReplayEpochFor(adoption)
+	if err != nil {
+		return gcmReplayWindow{}, err
+	}
+	if w.initialized && w.epoch == epoch {
+		return w, nil
+	}
+	return newGCMReplayWindow(adoption)
 }
 
 // New validates every dependency, loads or creates the stable emulated
@@ -149,6 +296,10 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 	if err != nil {
 		return nil, err
 	}
+	gcmReplay, err := newGCMReplayWindow(persistent.Adoption)
+	if err != nil {
+		return nil, err
+	}
 	gateway := &Gateway{
 		configuration: configuration,
 		poller:        poller,
@@ -162,6 +313,7 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		started:       options.Now().UTC(),
 		mac:           mac,
 		persistent:    persistent,
+		gcmReplay:     gcmReplay,
 		nextDiscovery: 1,
 	}
 	gateway.monitor.SetAdopted(persistent.Adoption.Adopted)
@@ -227,6 +379,9 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	if persistent.Adoption.UseAESGCM {
 		mode = inform.ModeGCM
 	}
+	if err := g.gcmReplay.sync(persistent.Adoption); err != nil {
+		return inform.Outcome{}, err
+	}
 	requestPacket, err := g.encoder.Encode(inform.Packet{MAC: g.mac, Payload: payload}, persistent.Adoption.AuthKey, mode)
 	if err != nil {
 		return inform.Outcome{}, err
@@ -249,17 +404,36 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	if err != nil {
 		return inform.Outcome{}, err
 	}
-	nextAdoption := adoptionFromState(persistent)
+	nextReplay := g.gcmReplay
+	var acceptedNonce [16]byte
+	hasAcceptedNonce := false
+	if mode == inform.ModeGCM {
+		nonce, ok := decoded.AuthenticatedGCMNonce()
+		if !ok {
+			return inform.Outcome{}, errors.New("gateway authenticated controller response omitted its nonce")
+		}
+		if nextReplay.contains(nonce) {
+			return inform.Outcome{}, ErrControllerResponseReplay
+		}
+		acceptedNonce = nonce
+		hasAcceptedNonce = true
+	}
+	currentAdoption := adoptionFromState(persistent)
+	nextAdoption := currentAdoption
 	outcome, err := nextAdoption.ApplyControllerResponse(decoded.Payload)
 	if err != nil {
 		return inform.Outcome{}, err
 	}
 	outcome.Interval = cappedInformInterval(outcome.Interval, g.configuration.UniFi.InformInterval)
 	if outcome.Kind == inform.ResponseRelayControl && len(outcome.CycleIntents) != 0 {
-		// Firmware-proven relayctl is a per-outlet power-cycle operation. This
-		// 4+4 zone gateway has no proven atomic NUT equivalent, so v1 observes
-		// and explicitly ignores the request without invoking upstream writes.
+		// UPS26 firmware parses relayctl rows but uses only the first row's
+		// delays for a global UPS cycle; index and relay_group are not a proven
+		// control address. V1 therefore observes and explicitly ignores the
+		// request without invoking upstream writes.
 		g.logger.Warn("controller relay cycle ignored", "component", "control", "intent_count", len(outcome.CycleIntents))
+	}
+	if len(outcome.UnsupportedSettings) != 0 {
+		g.logger.Warn("unsupported controller settings ignored", "component", "control", "setting_count", len(outcome.UnsupportedSettings))
 	}
 	if nextAdoption.InformURL != persistent.Adoption.InformURL {
 		if err := g.controller.AuthorizeTransition(ctx, persistent.Adoption.InformURL, nextAdoption.InformURL); err != nil {
@@ -269,7 +443,29 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 
 	nextPersistent := persistent
 	nextPersistent.Adoption = adoptionToState(nextAdoption)
-	if nextPersistent.Adoption != persistent.Adoption {
+	currentEpoch, err := gcmReplayEpochFor(persistent.Adoption)
+	if err != nil {
+		return inform.Outcome{}, err
+	}
+	nextEpoch, err := gcmReplayEpochFor(nextPersistent.Adoption)
+	if err != nil {
+		return inform.Outcome{}, err
+	}
+	if nextEpoch == currentEpoch {
+		nextPersistent.Adoption.GCMReplayNonces = append([]string(nil), persistent.Adoption.GCMReplayNonces...)
+	}
+	adoptionChanged := nextAdoption != currentAdoption
+	if hasAcceptedNonce {
+		nextReplay = nextReplay.withAccepted(acceptedNonce, adoptionChanged && nextEpoch == currentEpoch)
+	}
+	if adoptionChanged && mode == inform.ModeGCM && nextEpoch == currentEpoch {
+		nextPersistent.Adoption.GCMReplayNonces = nextReplay.encodedProtected()
+	}
+	nextReplay, err = nextReplay.rebased(nextPersistent.Adoption)
+	if err != nil {
+		return inform.Outcome{}, err
+	}
+	if adoptionChanged {
 		if err := g.saveState(g.configuration.Runtime.StateFile, nextPersistent); err != nil {
 			return inform.Outcome{}, err
 		}
@@ -278,6 +474,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	g.persistent = nextPersistent
 	g.lastInform = now
 	g.mu.Unlock()
+	g.gcmReplay = nextReplay
 	informResult = health.InformSuccess
 	g.monitor.SetAdopted(nextPersistent.Adoption.Adopted)
 	return outcome, nil

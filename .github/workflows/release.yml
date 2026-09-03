@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -43,6 +42,16 @@ jobs:
               fi
             done
           fi
+      - name: Require a public repository for tagged releases
+        if: github.ref_type == 'tag'
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          if [[ "$REPOSITORY_VISIBILITY" != "public" ]]; then
+            echo "Make the repository public before pushing a release tag." >&2
+            exit 1
+          fi
       - name: Verify formatting
         run: test -z "$(gofmt -l .)"
       - name: Test with race detector
@@ -55,6 +64,11 @@ jobs:
   publish:
     needs: verify
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -103,3 +117,148 @@ jobs:
           sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  publish-release:
+    if: github.ref_type == 'tag'
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/d3vi1/nut-2-unifi-ups-gateway
+      IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Require the public release trust root
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        shell: bash
+        run: |
+          if [[ "$REPOSITORY_VISIBILITY" != "public" ]]; then
+            echo "Tagged releases require a public repository so image attestations are available." >&2
+            exit 1
+          fi
+      - name: Validate published image digest
+        shell: bash
+        run: |
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "The multi-platform build did not return a valid sha256 manifest digest." >&2
+            exit 1
+          fi
+      - name: Attest published image digest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ env.IMAGE_DIGEST }}
+          push-to-registry: true
+      - name: Assemble digest-pinned Synology release bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_version=${GITHUB_REF_NAME#v}
+          bundle_name="nut-2-unifi-ups-gateway-${GITHUB_REF_NAME}-synology"
+          staging_root="$RUNNER_TEMP/n2u-release"
+          bundle_dir="$staging_root/$bundle_name"
+          assets_dir="$staging_root/assets"
+          bundle_path="$assets_dir/$bundle_name.tar.gz"
+          checksum_path="$assets_dir/$bundle_name.SHA256SUMS"
+
+          mkdir -p "$bundle_dir" "$assets_dir"
+          cp deploy/synology/compose.yaml "$bundle_dir/compose.yaml"
+          cp deploy/synology/compose.auth.yaml "$bundle_dir/compose.auth.yaml"
+          {
+            printf '# Generated for %s; keep the OCI manifest digest pinned.\n' "$GITHUB_REF_NAME"
+            awk -v image="$IMAGE_NAME@$IMAGE_DIGEST" '
+              /^N2U_IMAGE=/ {
+                replaced++
+                print "N2U_IMAGE=" image
+                next
+              }
+              { print }
+              END { if (replaced != 1) exit 1 }
+            ' deploy/synology/.env.example
+          } > "$bundle_dir/.env"
+          chmod 600 "$bundle_dir/.env"
+
+          {
+            printf 'Release tag: %s\n' "$GITHUB_REF_NAME"
+            printf 'Source commit: %s\n' "$GITHUB_SHA"
+            printf 'Image: %s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST"
+          } > "$bundle_dir/RELEASE-METADATA.txt"
+
+          source_date_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          tar --sort=name \
+            --mtime="@$source_date_epoch" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -czf "$bundle_path" \
+            -C "$staging_root" \
+            "$bundle_name"
+          (
+            cd "$assets_dir"
+            sha256sum "$bundle_name.tar.gz" > "$bundle_name.SHA256SUMS"
+            sha256sum -c "$bundle_name.SHA256SUMS"
+          )
+
+          {
+            printf 'bundle_path=%s\n' "$bundle_path"
+            printf 'checksum_path=%s\n' "$checksum_path"
+            printf 'release_version=%s\n' "$release_version"
+          } >> "$GITHUB_OUTPUT"
+      - name: Create draft release with verified assets
+        env:
+          BUNDLE_PATH: ${{ steps.bundle.outputs.bundle_path }}
+          CHECKSUM_PATH: ${{ steps.bundle.outputs.checksum_path }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.bundle.outputs.release_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "A release already exists for $GITHUB_REF_NAME; refusing to replace its assets." >&2
+            exit 1
+          fi
+
+          notes_file="$RUNNER_TEMP/n2u-release-notes.md"
+          {
+            printf '# NUT 2 UniFi UPS Gateway %s\n\n' "$RELEASE_VERSION"
+            printf -- '- Source tag: %s\n' "$GITHUB_REF_NAME"
+            printf -- '- Source commit: %s\n' "$GITHUB_SHA"
+            printf -- '- Multi-platform image: %s@%s\n\n' "$IMAGE_NAME" "$IMAGE_DIGEST"
+            printf 'The Synology bundle contains Compose files and a generated .env pinned to that OCI manifest digest. Verify the bundle with the attached SHA256SUMS before extraction. The checksum detects transfer or storage corruption; its trust root is this GitHub Release and the repository controls protecting it.\n'
+          } > "$notes_file"
+
+          release_args=(
+            "$GITHUB_REF_NAME"
+            --draft
+            --verify-tag
+            --title "NUT 2 UniFi UPS Gateway $RELEASE_VERSION"
+            --notes-file "$notes_file"
+          )
+          without_build=${GITHUB_REF_NAME%%+*}
+          if [[ "$without_build" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "${release_args[@]}" "$BUNDLE_PATH" "$CHECKSUM_PATH"
+      - name: Publish completed release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+          if [[ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" != "false" ]]; then
+            echo "The GitHub Release is still a draft." >&2
+            exit 1
+          fi

@@ -66,6 +66,9 @@ type Packet struct {
 	MAC           [6]byte
 	PacketVersion uint32
 	Payload       []byte
+
+	authenticatedGCMNonce [aes.BlockSize]byte
+	hasGCMNonce           bool
 }
 
 func (p Packet) String() string {
@@ -73,6 +76,13 @@ func (p Packet) String() string {
 }
 
 func (p Packet) GoString() string { return p.String() }
+
+// AuthenticatedGCMNonce returns the TNBU GCM nonce only after Decode has
+// successfully authenticated the complete packet. CBC packets and packets
+// constructed by callers do not carry an authenticated inbound nonce.
+func (p Packet) AuthenticatedGCMNonce() ([aes.BlockSize]byte, bool) {
+	return p.authenticatedGCMNonce, p.hasGCMNonce
+}
 
 // Encoder owns the nonce sequence used for outgoing packets. GCM nonces have
 // a random per-process prefix and a monotonically increasing counter, so a
@@ -321,7 +331,12 @@ func (d Decoder) Decode(data []byte, keyHex string) (Packet, error) {
 	if len(plain) == 0 || len(plain) > limits.MaxPlaintext {
 		return Packet{}, fmt.Errorf("inform: plaintext exceeds %d-byte limit", limits.MaxPlaintext)
 	}
-	return Packet{MAC: mac, PacketVersion: packetVersion, Payload: plain}, nil
+	packet := Packet{MAC: mac, PacketVersion: packetVersion, Payload: plain}
+	if mode == ModeGCM {
+		copy(packet.authenticatedGCMNonce[:], iv)
+		packet.hasGCMNonce = true
+	}
+	return packet, nil
 }
 
 func marshalHeader(mac [6]byte, packetVersion uint32, flags uint16, iv [aes.BlockSize]byte, bodyLen int) []byte {

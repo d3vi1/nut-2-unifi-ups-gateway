@@ -3,6 +3,7 @@
 ## Evidence classification
 
 - [ ] PROVEN
+- [ ] OBSERVED
 - [ ] CANDIDATE
 - [ ] UNKNOWN made explicit
 - [ ] BLOCKED_EXTERNAL made explicit

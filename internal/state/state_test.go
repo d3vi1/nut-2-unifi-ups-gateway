@@ -1,8 +1,10 @@
 package state
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -18,7 +20,7 @@ func TestLoadOrCreateIsStableAndPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a != b {
+	if !reflect.DeepEqual(a, b) {
 		t.Fatal("persistent state changed across load")
 	}
 	info, err := os.Stat(path)
@@ -120,6 +122,84 @@ func TestLoadRejectsUnknownAndTrailingJSON(t *testing.T) {
 			}
 			if _, err := LoadOrCreate(path, "", "", "http://unifi:8080/inform", testKey); err == nil {
 				t.Fatal("expected strict state decode failure")
+			}
+		})
+	}
+}
+
+func TestLegacyVersionOneStateWithoutReplayWindowLoads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	legacy := []byte(`{
+  "version": 1,
+  "identity": {
+    "mac": "02:00:00:00:00:01",
+    "serial": "LEGACY1",
+    "guid": "00000000-0000-4000-8000-000000000001"
+  },
+  "adoption": {
+    "auth_key": "00112233445566778899aabbccddeeff",
+    "inform_url": "http://unifi:8080/inform",
+    "cfg_version": "legacy",
+    "adopted": true,
+    "use_aes_gcm": true
+  }
+}`)
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadOrCreate(path, "", "", "http://ignored:8080/inform", testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Adoption.GCMReplayNonces) != 0 || !loaded.Adoption.UseAESGCM {
+		t.Fatalf("legacy replay state changed on load: %+v", loaded.Adoption)
+	}
+}
+
+func TestValidateBoundsAndChecksGCMReplayWindow(t *testing.T) {
+	base := State{
+		Version: currentVersion,
+		Identity: Identity{
+			MAC: "02:00:00:00:00:01", Serial: "REPLAY1",
+			GUID: "00000000-0000-4000-8000-000000000001",
+		},
+		Adoption: Adoption{
+			AuthKey: "00112233445566778899aabbccddeeff", InformURL: "http://unifi:8080/inform",
+			CfgVersion: "1", Adopted: true, UseAESGCM: true,
+		},
+	}
+	for index := 0; index < MaxGCMReplayNonces; index++ {
+		base.Adoption.GCMReplayNonces = append(base.Adoption.GCMReplayNonces, fmt.Sprintf("%032x", index+1))
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("maximum replay window rejected: %v", err)
+	}
+
+	tests := map[string]func(State) State{
+		"too many": func(s State) State {
+			s.Adoption.GCMReplayNonces = append(s.Adoption.GCMReplayNonces, fmt.Sprintf("%032x", MaxGCMReplayNonces+1))
+			return s
+		},
+		"malformed": func(s State) State {
+			s.Adoption.GCMReplayNonces = []string{"not-a-nonce"}
+			return s
+		},
+		"duplicate": func(s State) State {
+			s.Adoption.GCMReplayNonces = []string{fmt.Sprintf("%032x", 10), fmt.Sprintf("%032X", 10)}
+			return s
+		},
+		"CBC window": func(s State) State {
+			s.Adoption.UseAESGCM = false
+			s.Adoption.GCMReplayNonces = []string{fmt.Sprintf("%032x", 1)}
+			return s
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			candidate.Adoption.GCMReplayNonces = append([]string(nil), base.Adoption.GCMReplayNonces...)
+			if err := mutate(candidate).Validate(); err == nil {
+				t.Fatal("invalid replay window accepted")
 			}
 		})
 	}

@@ -22,6 +22,9 @@ func TestLoadDefaults(t *testing.T) {
 	if c.UniFi.Model != "USWDA26" {
 		t.Fatalf("unexpected default model %q", c.UniFi.Model)
 	}
+	if c.UniFi.NUTServer.Enabled || c.UniFi.NUTServer.ID != "ups" || c.UniFi.NUTServer.Port != 3493 {
+		t.Fatalf("unexpected advertised NUT server defaults: %+v", c.UniFi.NUTServer)
+	}
 	if c.Runtime.HealthAddress != "127.0.0.1:9199" {
 		t.Fatalf("unexpected health default %q", c.Runtime.HealthAddress)
 	}
@@ -114,6 +117,41 @@ func TestRejectsUnverifiedFirmwareVersion(t *testing.T) {
 	t.Setenv("N2U_UNIFI_VERSION", "1.6.2")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected unverified firmware profile to fail")
+	}
+}
+
+func TestAdvertisedNUTServerRequiresExplicitBoundedConfiguration(t *testing.T) {
+	clearEnvironment(t)
+	t.Setenv("N2U_UNIFI_NUT_SERVER_ENABLED", "true")
+	t.Setenv("N2U_UNIFI_NUT_SERVER_ID", "rack-ups")
+	t.Setenv("N2U_UNIFI_NUT_SERVER_PORT", "3494")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.UniFi.NUTServer.Enabled || c.UniFi.NUTServer.ID != "rack-ups" || c.UniFi.NUTServer.Port != 3494 {
+		t.Fatalf("explicit NUT server advertisement was not retained: %+v", c.UniFi.NUTServer)
+	}
+
+	for name, value := range map[string]string{
+		"missing id": "",
+		"long id":    "abcdefghijklmnopqrstuvwxyz123456",
+		"unsafe id":  "rack ups",
+	} {
+		t.Run(name, func(t *testing.T) {
+			clearEnvironment(t)
+			t.Setenv("N2U_UNIFI_NUT_SERVER_ENABLED", "true")
+			t.Setenv("N2U_UNIFI_NUT_SERVER_ID", value)
+			if _, err := Load(); err == nil {
+				t.Fatal("invalid advertised NUT server ID was accepted")
+			}
+		})
+	}
+
+	clearEnvironment(t)
+	t.Setenv("N2U_UNIFI_NUT_SERVER_PORT", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid advertised NUT server port was accepted")
 	}
 }
 

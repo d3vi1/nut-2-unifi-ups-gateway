@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,6 +31,8 @@ import (
 )
 
 const testControllerKey = "00112233445566778899aabbccddeeff"
+
+var gatewayTestMAC = [6]byte{0x02, 0x11, 0x22, 0x33, 0x44, 0x55}
 
 func TestCycleWithFakeNUTAndHTTPControllerPersistsAdoption(t *testing.T) {
 	nutAddress := startFakeNUT(t, []string{
@@ -143,6 +148,240 @@ func TestCycleWithFakeNUTAndHTTPControllerPersistsAdoption(t *testing.T) {
 	_, ready := monitor.Snapshot(time.Now())
 	if !ready {
 		t.Fatal("valid NUT observation did not make the gateway ready")
+	}
+}
+
+func TestGCMReplayIsRejectedInSameProcessWithoutLeakingMaterial(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	seedManagedGCMState(t, configuration, testControllerKey, "1")
+	nonce := [16]byte{0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	wire := encodeGCMControllerResponse(t, testControllerKey, nonce, []byte(`{"_type":"noop"}`))
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		return append([]byte(nil), wire...), nil
+	}}
+	service := newReplayTestGateway(t, configuration, now, controller, nil)
+	if _, err := service.InformOnce(context.Background()); err != nil {
+		t.Fatalf("first authenticated response rejected: %v", err)
+	}
+	_, err := service.InformOnce(context.Background())
+	if !errors.Is(err, ErrControllerResponseReplay) {
+		t.Fatalf("replayed response error = %v, want replay rejection", err)
+	}
+	errorText := err.Error()
+	if strings.Contains(errorText, testControllerKey) || strings.Contains(errorText, hex.EncodeToString(nonce[:])) || strings.Contains(errorText, "deadbeef") {
+		t.Fatalf("replay error leaked key or nonce: %q", errorText)
+	}
+}
+
+func TestPersistedStateChangingGCMReplayIsRejectedAfterRestart(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	seedManagedGCMState(t, configuration, testControllerKey, "1")
+	nonce := [16]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	wire := encodeGCMControllerResponse(t, testControllerKey, nonce, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\n"}`))
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		return append([]byte(nil), wire...), nil
+	}}
+	first := newReplayTestGateway(t, configuration, now, controller, nil)
+	if _, err := first.InformOnce(context.Background()); err != nil {
+		t.Fatalf("state-changing response rejected: %v", err)
+	}
+	persisted, err := state.LoadOrCreate(
+		configuration.Runtime.StateFile,
+		configuration.Device.MAC,
+		configuration.Device.Serial,
+		configuration.UniFi.InformURL,
+		inform.DefaultKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Adoption.CfgVersion != "2" || len(persisted.Adoption.GCMReplayNonces) != 1 || persisted.Adoption.GCMReplayNonces[0] != hex.EncodeToString(nonce[:]) {
+		t.Fatalf("state-changing adoption persistence mismatch: cfg=%q replay_entries=%d", persisted.Adoption.CfgVersion, len(persisted.Adoption.GCMReplayNonces))
+	}
+
+	restarted := newReplayTestGateway(t, configuration, now, controller, nil)
+	if _, err := restarted.InformOnce(context.Background()); !errors.Is(err, ErrControllerResponseReplay) {
+		t.Fatalf("persisted replay after restart error = %v", err)
+	}
+}
+
+func TestGCMReplayEpochResetsAfterAuthKeyChange(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	seedManagedGCMState(t, configuration, testControllerKey, "1")
+	const nextKey = "ffeeddccbbaa99887766554433221100"
+	nonce := [16]byte{0x42, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	responses := [][]byte{
+		encodeGCMControllerResponse(t, testControllerKey, nonce, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\nauthkey=`+nextKey+`\n"}`)),
+		encodeGCMControllerResponse(t, nextKey, nonce, []byte(`{"_type":"noop"}`)),
+	}
+	call := 0
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		index := call
+		if index >= len(responses) {
+			index = len(responses) - 1
+		}
+		call++
+		return append([]byte(nil), responses[index]...), nil
+	}}
+	service := newReplayTestGateway(t, configuration, now, controller, nil)
+	if _, err := service.InformOnce(context.Background()); err != nil {
+		t.Fatalf("key rotation response rejected: %v", err)
+	}
+	if service.persistent.Adoption.AuthKey != nextKey || len(service.persistent.Adoption.GCMReplayNonces) != 0 {
+		t.Fatalf("key rotation did not reset replay epoch: replay_entries=%d", len(service.persistent.Adoption.GCMReplayNonces))
+	}
+	if _, err := service.InformOnce(context.Background()); err != nil {
+		t.Fatalf("same nonce under a new key epoch rejected: %v", err)
+	}
+	if _, err := service.InformOnce(context.Background()); !errors.Is(err, ErrControllerResponseReplay) {
+		t.Fatalf("replay in the new key epoch error = %v", err)
+	}
+}
+
+func TestGCMReplayWindowResetsAfterModeChange(t *testing.T) {
+	nonce := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	adoption := state.Adoption{
+		AuthKey: testControllerKey, InformURL: "http://192.0.2.10:8080/inform", CfgVersion: "1",
+		Adopted: true, UseAESGCM: true, GCMReplayNonces: []string{hex.EncodeToString(nonce[:])},
+	}
+	window, err := newGCMReplayWindow(adoption)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !window.contains(nonce) {
+		t.Fatal("persisted GCM nonce was not loaded")
+	}
+	adoption.UseAESGCM = false
+	adoption.GCMReplayNonces = nil
+	if err := window.sync(adoption); err != nil {
+		t.Fatal(err)
+	}
+	if window.contains(nonce) || len(window.recentOrder) != 0 || len(window.protectedOrder) != 0 {
+		t.Fatal("CBC epoch retained GCM replay state")
+	}
+	adoption.UseAESGCM = true
+	if err := window.sync(adoption); err != nil {
+		t.Fatal(err)
+	}
+	if window.contains(nonce) || len(window.recentOrder) != 0 || len(window.protectedOrder) != 0 {
+		t.Fatal("new GCM mode epoch restored an old nonce")
+	}
+}
+
+func TestFreshGCMNoopsDoNotWriteStateAndPersistedWindowIsBounded(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	seedManagedGCMState(t, configuration, testControllerKey, "1")
+	encoder, err := inform.NewEncoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const extraNoops = 5
+	noopCount := state.MaxGCMReplayNonces + extraNoops
+	controllerCalls := 0
+	emittedNonces := make([]string, 0, noopCount+1)
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		payload := []byte(`{"_type":"noop"}`)
+		if controllerCalls == noopCount {
+			payload = []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\n"}`)
+		}
+		controllerCalls++
+		wire, err := encoder.Encode(inform.Packet{MAC: gatewayTestMAC, Payload: payload}, testControllerKey, inform.ModeGCM)
+		if err != nil {
+			return nil, err
+		}
+		emittedNonces = append(emittedNonces, hex.EncodeToString(wire[16:32]))
+		return wire, nil
+	}}
+	var (
+		saveCalls int
+		saved     state.State
+	)
+	service := newReplayTestGateway(t, configuration, now, controller, func(_ string, candidate state.State) error {
+		saveCalls++
+		saved = candidate
+		return nil
+	})
+	for index := 0; index < noopCount; index++ {
+		if _, err := service.InformOnce(context.Background()); err != nil {
+			t.Fatalf("fresh noop %d rejected: %v", index, err)
+		}
+	}
+	if saveCalls != 0 {
+		t.Fatalf("fresh noops wrote persistent state %d times", saveCalls)
+	}
+	if len(service.gcmReplay.recentOrder) != state.MaxGCMReplayNonces || len(service.gcmReplay.protectedOrder) != 0 {
+		t.Fatalf("in-memory replay windows = recent %d protected %d", len(service.gcmReplay.recentOrder), len(service.gcmReplay.protectedOrder))
+	}
+	if _, err := service.InformOnce(context.Background()); err != nil {
+		t.Fatalf("state-changing response rejected: %v", err)
+	}
+	if saveCalls != 1 {
+		t.Fatalf("state-changing response wrote state %d times, want once", saveCalls)
+	}
+	if len(saved.Adoption.GCMReplayNonces) != 1 {
+		t.Fatalf("persisted state-changing replay window = %d, want 1", len(saved.Adoption.GCMReplayNonces))
+	}
+	if saved.Adoption.GCMReplayNonces[0] != emittedNonces[len(emittedNonces)-1] {
+		t.Fatal("persisted replay window did not contain the state-changing response nonce")
+	}
+}
+
+func TestFreshNoopsCannotEvictStateChangingReplayProtection(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	seedManagedGCMState(t, configuration, testControllerKey, "1")
+	stateChangingNonce := [16]byte{0xa5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	stateChangingWire := encodeGCMControllerResponse(t, testControllerKey, stateChangingNonce, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\n"}`))
+	freshEncoder, err := inform.NewEncoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const extraNoops = 7
+	noops := state.MaxGCMReplayNonces + extraNoops
+	call := 0
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		call++
+		if call == 1 || call > noops+1 {
+			return append([]byte(nil), stateChangingWire...), nil
+		}
+		return freshEncoder.Encode(inform.Packet{MAC: gatewayTestMAC, Payload: []byte(`{"_type":"noop"}`)}, testControllerKey, inform.ModeGCM)
+	}}
+	saveCalls := 0
+	service := newReplayTestGateway(t, configuration, now, controller, func(path string, candidate state.State) error {
+		saveCalls++
+		return state.Save(path, candidate)
+	})
+	if _, err := service.InformOnce(context.Background()); err != nil {
+		t.Fatalf("state-changing response rejected: %v", err)
+	}
+	for index := 0; index < noops; index++ {
+		if _, err := service.InformOnce(context.Background()); err != nil {
+			t.Fatalf("fresh noop %d rejected: %v", index, err)
+		}
+	}
+	if saveCalls != 1 {
+		t.Fatalf("noops changed the state write count to %d", saveCalls)
+	}
+	if _, recent := service.gcmReplay.recentSeen[stateChangingNonce]; recent {
+		t.Fatal("test did not evict the old nonce from the bounded recent-all window")
+	}
+	if _, protected := service.gcmReplay.protectedSeen[stateChangingNonce]; !protected {
+		t.Fatal("noops evicted the state-changing nonce from the protected window")
+	}
+	if _, err := service.InformOnce(context.Background()); !errors.Is(err, ErrControllerResponseReplay) {
+		t.Fatalf("same-process rollback replay after noops error = %v", err)
+	}
+
+	replayController := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		return append([]byte(nil), stateChangingWire...), nil
+	}}
+	restarted := newReplayTestGateway(t, configuration, now, replayController, nil)
+	if _, err := restarted.InformOnce(context.Background()); !errors.Is(err, ErrControllerResponseReplay) {
+		t.Fatalf("restart rollback replay after noops error = %v", err)
 	}
 }
 
@@ -399,12 +638,18 @@ func TestPollingContinuesWhileControllerExchangeIsBlocked(t *testing.T) {
 func TestUnprovenControllerWritesNeverReachNUT(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	responses := []struct {
-		body      string
-		kind      inform.ResponseKind
-		wantError bool
+		body                    string
+		kind                    inform.ResponseKind
+		wantUnsupportedSettings int
+		wantError               bool
 	}{
 		{body: `{"_type":"setstate","outlet_overrides":[{"index":1,"relay_state":false}]}`, wantError: true},
 		{body: `{"_type":"cmd","cmd":"relayctl","outlet_table":[{"index":1,"delay_time_to_off":0,"delay_time_to_on":0.1}]}`, kind: inform.ResponseRelayControl},
+		{
+			body:                    `{"_type":"setparam","mgmt_cfg":"cfgversion=next\n","system_cfg":"power_cycle_on_ac_recovery.status=enabled\nbeep.status=disabled\nnutserver.status=enabled\n"}`,
+			kind:                    inform.ResponseSetParam,
+			wantUnsupportedSettings: 3,
+		},
 	}
 	for _, response := range responses {
 		configuration := baseConfig(t)
@@ -430,6 +675,9 @@ func TestUnprovenControllerWritesNeverReachNUT(t *testing.T) {
 			}
 			if outcome.Kind != response.kind {
 				t.Fatalf("response kind = %d, want %d", outcome.Kind, response.kind)
+			}
+			if len(outcome.UnsupportedSettings) != response.wantUnsupportedSettings {
+				t.Fatalf("unsupported setting categories = %v, want %d", outcome.UnsupportedSettings, response.wantUnsupportedSettings)
 			}
 		}
 		if len(poller.commands) != 0 {
@@ -527,6 +775,7 @@ func baseConfig(t *testing.T) config.Config {
 		UniFi: config.UniFi{
 			Model: inform.ModelUPS2UEU, Version: "1.6.1", InformURL: "http://192.0.2.10:8080/inform",
 			InformInterval: 10 * time.Second, InformTimeout: time.Second, DiscoveryInterval: 30 * time.Second,
+			NUTServer: config.NUTServerAdvertisement{ID: "ups", Port: 3493},
 		},
 		Device: config.Device{MAC: "02:11:22:33:44:55", Serial: "N2UTEST0001", Hostname: "n2u-test", IP: "192.0.2.20"},
 		Runtime: config.Runtime{
@@ -535,6 +784,85 @@ func baseConfig(t *testing.T) config.Config {
 		},
 		LogLevel: "info",
 	}
+}
+
+type functionalController struct {
+	exchange func(context.Context, string, []byte) ([]byte, error)
+}
+
+func (c *functionalController) Exchange(ctx context.Context, endpoint string, request []byte) ([]byte, error) {
+	return c.exchange(ctx, endpoint, request)
+}
+
+func (*functionalController) AuthorizeTransition(context.Context, string, string) error { return nil }
+
+func seedManagedGCMState(t *testing.T, configuration config.Config, key, cfgVersion string) {
+	t.Helper()
+	persistent, err := state.LoadOrCreate(
+		configuration.Runtime.StateFile,
+		configuration.Device.MAC,
+		configuration.Device.Serial,
+		configuration.UniFi.InformURL,
+		inform.DefaultKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistent.Adoption = state.Adoption{
+		AuthKey: key, InformURL: configuration.UniFi.InformURL, CfgVersion: cfgVersion,
+		Adopted: true, UseAESGCM: true,
+	}
+	if err := state.Save(configuration.Runtime.StateFile, persistent); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newReplayTestGateway(t *testing.T, configuration config.Config, now time.Time, controller Controller, saveState func(string, state.State) error) *Gateway {
+	t.Helper()
+	options := Options{
+		Poller: &sequencePoller{snapshots: []nut.Snapshot{{
+			CollectedAt: now,
+			Variables:   map[string]string{"ups.status": "OL"},
+		}}},
+		Controller: controller,
+		Now:        func() time.Time { return now },
+		Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+		SaveState:  saveState,
+	}
+	service, err := New(context.Background(), configuration, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func encodeGCMControllerResponse(t *testing.T, keyHex string, nonce [16]byte, payload []byte) []byte {
+	t.Helper()
+	key, err := hex.DecodeString(keyHex)
+	if err != nil || len(key) != aes.BlockSize {
+		t.Fatal("invalid test key")
+	}
+	block, err := aes.NewCipher(key)
+	clear(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := cipher.NewGCMWithNonceSize(block, len(nonce))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := make([]byte, inform.HeaderLength)
+	copy(header[:4], "TNBU")
+	binary.BigEndian.PutUint32(header[4:8], inform.PacketVersion)
+	copy(header[8:14], gatewayTestMAC[:])
+	binary.BigEndian.PutUint16(header[14:16], uint16(1<<0|1<<3))
+	copy(header[16:32], nonce[:])
+	binary.BigEndian.PutUint32(header[32:36], inform.PayloadVersion)
+	binary.BigEndian.PutUint32(header[36:40], uint32(len(payload)+aead.Overhead()))
+	return append(header, aead.Seal(nil, nonce[:], payload, header)...)
 }
 
 type sequencePoller struct {

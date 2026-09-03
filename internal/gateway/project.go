@@ -29,6 +29,7 @@ func projectPowerDevice(
 			Model:           configuration.UniFi.Model,
 			FirmwareVersion: configuration.UniFi.Version,
 		},
+		OutletTopologySource: inform.OutletTopologyCarrierFallback,
 		Identity: inform.DeviceIdentity{
 			MAC:      persistent.Identity.MAC,
 			Serial:   persistent.Identity.Serial,
@@ -55,6 +56,22 @@ func projectPowerDevice(
 			Netmask: network.Netmask,
 		},
 	}
+	if smartPower, err := inform.ReadOnlySmartPowerCapabilities(report.Profile); err == nil {
+		if !configuration.UniFi.NUTServer.Enabled {
+			smartPower &^= inform.SmartPowerCapabilityNUTInformationAccess
+		}
+		report.Capabilities.SmartPower = int64Pointer(smartPower)
+	}
+	if configuration.UniFi.NUTServer.Enabled {
+		report.NUTServer = &inform.NUTServerAdvertisement{
+			Enabled: true,
+			ID:      configuration.UniFi.NUTServer.ID,
+			Port:    configuration.UniFi.NUTServer.Port,
+		}
+	}
+	if observation.TopologyObserved {
+		report.OutletTopologySource = inform.OutletTopologyObservedNUT
+	}
 
 	report.Outlets = projectOutletTopology(configuration.UniFi.Model, observation)
 	if observation.Availability != model.AvailabilityAvailable {
@@ -78,6 +95,10 @@ func projectPowerDevice(
 	if observation.Electrical.OutputPowerW.Known {
 		report.VBMS.Battery.TotalPowerOutputW = floatPointer(observation.Electrical.OutputPowerW.Value)
 	}
+	if observation.Electrical.OutputPowerNominalW.Known && observation.Electrical.OutputPowerNominalW.Value > 0 {
+		budget := roundedInt(observation.Electrical.OutputPowerNominalW.Value)
+		report.VBMS.Battery.TotalPowerBudgetW = &budget
+	}
 	if observation.Electrical.OutputPowerFactor.Known && observation.Electrical.OutputPowerFactor.Value <= 1 {
 		report.VBMS.Battery.TotalPowerFactor = floatPointer(observation.Electrical.OutputPowerFactor.Value)
 	}
@@ -96,8 +117,14 @@ func projectPowerDevice(
 	if observation.Status.OnBattery.Known {
 		report.VBMS.BatteryMode = boolPointer(observation.Status.OnBattery.Value)
 	}
+	switch observation.BeeperStatus {
+	case model.BeeperStatusEnabled:
+		report.BeepEnabled = boolPointer(true)
+	case model.BeeperStatusDisabled:
+		report.BeepEnabled = boolPointer(false)
+	}
 
-	projectAvailableOutletTelemetry(report.Outlets, observation, configuration.UniFi.Model)
+	projectAvailableOutletTelemetry(report.Outlets, observation)
 	return report
 }
 
@@ -109,6 +136,29 @@ func uuidText(value [16]byte) string {
 }
 
 func projectOutletTopology(profile string, observation model.State) []inform.OutletTelemetry {
+	if observation.TopologyObserved {
+		outlets := make([]inform.OutletTelemetry, len(observation.Outlets))
+		for offset, source := range observation.Outlets {
+			capabilities := inform.OutletCapabilityAC
+			if source.Type == model.OutletTypeUSB {
+				capabilities = inform.OutletCapabilityUSB
+			}
+			if source.Switchable.Known && source.Switchable.Value {
+				capabilities |= inform.OutletCapabilityHasRelay
+			}
+			if source.PowerMeter {
+				capabilities |= inform.OutletCapabilityPowerMeter
+			}
+			outlets[offset] = inform.OutletTelemetry{
+				Index:        source.Index,
+				Name:         source.Name,
+				Capabilities: intPointer(capabilities),
+				RelayGroup:   source.RelayGroup,
+			}
+		}
+		return outlets
+	}
+
 	count := 8
 	if profile == inform.ModelUPS2UProEU {
 		count = 9
@@ -116,49 +166,49 @@ func projectOutletTopology(profile string, observation model.State) []inform.Out
 	outlets := make([]inform.OutletTelemetry, count)
 	for index := range outlets {
 		group := index/4 + 1
-		buttonGroup := 0
-		if index < 4 {
-			buttonGroup = 1
-		}
 		name := "Outlet " + integerString(index+1)
 		if index < len(observation.Outlets) {
 			group = observation.Outlets[index].RelayGroup
 			name = observation.Outlets[index].Name
 		}
 		if profile == inform.ModelUPS2UProEU {
-			// The Pro profile exposes nine independently identified outlet rows.
+			// Preserve only its nine-row structural fallback. Physical buttons and
+			// firmware capabilities are not facts about the NUT source.
 			group = index + 1
-			buttonGroup = index + 1
 		}
 		outlets[index] = inform.OutletTelemetry{
-			Name:        name,
-			RelayGroup:  group,
-			ButtonGroup: buttonGroup,
+			Index:        index + 1,
+			Name:         name,
+			Capabilities: intPointer(inform.OutletCapabilityAC),
+			RelayGroup:   group,
 		}
 	}
 	return outlets
 }
 
-func projectAvailableOutletTelemetry(outlets []inform.OutletTelemetry, observation model.State, profile string) {
+func projectAvailableOutletTelemetry(outlets []inform.OutletTelemetry, observation model.State) {
+	if !observation.TopologyObserved {
+		// The carrier fallback supplies layout only. Without outlet.count there is
+		// no trustworthy NUT row/group mapping for relay or electrical state.
+		return
+	}
 	for index := range outlets {
 		if index >= len(observation.Outlets) {
 			continue
 		}
 		source := observation.Outlets[index]
 		relay := source.RelayState
-		if relay == model.RelayUnknown && source.RelayGroup >= 1 && source.RelayGroup <= len(observation.Zones) {
-			relay = observation.Zones[source.RelayGroup-1].RelayState
+		if source.RelayGroup >= 1 && source.RelayGroup <= len(observation.Groups) {
+			// A shared relay must be represented consistently on every member.
+			// Conflicting or incomplete member evidence makes the whole group
+			// unknown rather than emitting impossible per-row states.
+			relay = observation.Groups[source.RelayGroup-1].RelayState
 		}
 		switch relay {
 		case model.RelayOn:
 			outlets[index].RelayState = boolPointer(true)
 		case model.RelayOff:
 			outlets[index].RelayState = boolPointer(false)
-		}
-		if profile == inform.ModelUPS2UEU {
-			// The firmware-proven USWDA26 callback reports topology and relay
-			// state only; it has no per-outlet electrical/energy fields.
-			continue
 		}
 		if source.Voltage.Known {
 			outlets[index].VoltageV = floatPointer(source.Voltage.Value)
@@ -186,6 +236,8 @@ func roundedUint64(value float64) uint64 {
 
 func boolPointer(value bool) *bool        { return &value }
 func floatPointer(value float64) *float64 { return &value }
+func intPointer(value int) *int           { return &value }
+func int64Pointer(value int64) *int64     { return &value }
 
 func integerString(value int) string {
 	if value >= 0 && value <= 9 {

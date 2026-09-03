@@ -88,10 +88,16 @@ type Outcome struct {
 	RestartRequested bool
 	UpgradeVersion   string
 	CycleIntents     []OutletCycleIntent
+	// UnsupportedSettings contains only fixed, non-secret categories. It makes
+	// controller controls that this read-only gateway ignored observable without
+	// retaining their values or a raw controller response.
+	UnsupportedSettings []string
 }
 
-// OutletCycleIntent is non-executable protocol evidence. Gateway v1 records
-// only the count of parsed intents and has no NUT write-command API.
+// OutletCycleIntent is a bounded, non-executable representation of one wire
+// row. The index is syntactic evidence, not a proven hardware address: UPS26
+// firmware was observed using only the first row's delays for a global cycle.
+// Gateway v1 has no NUT write-command API.
 type OutletCycleIntent struct {
 	OutletIndex int
 	DelayOff    time.Duration
@@ -103,6 +109,7 @@ type controllerResponse struct {
 	Cmd         string          `json:"cmd"`
 	Interval    int64           `json:"interval"`
 	MgmtCfg     string          `json:"mgmt_cfg"`
+	SystemCfg   string          `json:"system_cfg"`
 	Version     string          `json:"version"`
 	OutletTable json.RawMessage `json:"outlet_table"`
 }
@@ -152,6 +159,7 @@ func (s *AdoptionState) ApplyControllerResponse(body []byte) (Outcome, error) {
 		}
 		out.StateChanged = changed
 		out.InformURLChanged = urlChanged
+		out.UnsupportedSettings = unsupportedControllerSettings(response.SystemCfg)
 	case "setdefault":
 		out = next.factoryReset()
 		markManaged = false
@@ -185,6 +193,58 @@ func (s *AdoptionState) ApplyControllerResponse(body []byte) (Outcome, error) {
 	}
 	*s = next
 	return out, nil
+}
+
+func unsupportedControllerSettings(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	// The complete controller response is already bounded. Scan only a bounded
+	// prefix and retain category names, never values (which may include a NUT
+	// password).
+	if len(raw) > 64<<10 {
+		raw = raw[:64<<10]
+	}
+	var nutServer, powerCycle, buzzer, outletPower, emergencyPower bool
+	lines := strings.Split(strings.ReplaceAll(raw, "\r", "\n"), "\n")
+	if len(lines) > 512 {
+		lines = lines[:512]
+	}
+	for _, line := range lines {
+		name, _, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		switch {
+		case strings.HasPrefix(name, "nutserver."):
+			nutServer = true
+		case strings.HasPrefix(name, "power_cycle_on_ac_recovery."):
+			powerCycle = true
+		case name == "beep.status":
+			buzzer = true
+		case name == "outlet.status":
+			outletPower = true
+		case strings.HasPrefix(name, "epo.") || strings.HasPrefix(name, "emergency_power_off."):
+			emergencyPower = true
+		}
+	}
+	result := make([]string, 0, 5)
+	for _, candidate := range []struct {
+		present bool
+		name    string
+	}{
+		{nutServer, "nut-server"},
+		{powerCycle, "power-cycle-on-ac-recovery"},
+		{buzzer, "buzzer"},
+		{outletPower, "outlet-power"},
+		{emergencyPower, "emergency-power-off"},
+	} {
+		if candidate.present {
+			result = append(result, candidate.name)
+		}
+	}
+	return result
 }
 
 func (s *AdoptionState) applyMgmtCfg(raw string) (bool, bool, error) {

@@ -19,12 +19,42 @@ const (
 	DeviceStatePending = 0
 	DeviceStateAdopted = 2
 	maxRuntimeSeconds  = 31 * 24 * 60 * 60
+	maxOutletCount     = 64
+
+	// Outlet capability bits are reverse-engineered wire values. Dynamic NUT
+	// projection deliberately uses only the directly supportable subset.
+	OutletCapabilityHasRelay   = 1 << 0
+	OutletCapabilityPowerMeter = 1 << 1
+	OutletCapabilityAutoRelay  = 1 << 2
+	OutletCapabilityAC         = 1 << 16
+	OutletCapabilityUSB        = 1 << 17
+
+	// Smart-power capability bits are a separate controller bitmap from
+	// outlet_caps. A compatibility gateway may advertise a strict subset of a
+	// firmware profile when it deliberately does not implement a control path.
+	SmartPowerCapabilityNUTInformationAccess     int64 = 1 << 0
+	SmartPowerCapabilityCycleOnACRecovery        int64 = 1 << 1
+	SmartPowerCapabilityBuzzerControl            int64 = 1 << 2
+	SmartPowerCapabilitySafeShutdownAndCycleTime int64 = 1 << 3
+	SmartPowerCapabilityEmergencyPowerOff        int64 = 1 << 4
+)
+
+// OutletTopologySource is local projection policy and is never serialized as
+// a model. The zero value is reserved for exact firmware-reference fixtures;
+// the runtime chooses either a conservative carrier fallback or observed NUT
+// topology explicitly.
+type OutletTopologySource string
+
+const (
+	OutletTopologyProfile         OutletTopologySource = ""
+	OutletTopologyCarrierFallback OutletTopologySource = "carrier-fallback"
+	OutletTopologyObservedNUT     OutletTopologySource = "nut-observed"
 )
 
 // DeviceProfile selects one controller-known power-device identity. The
 // firmware version is explicit because the two profiles do not share a release
-// history. BuildPowerDevicePayload derives display name, sysid, and outlet
-// count from Model; callers cannot override those fingerprint fields.
+// history. BuildPowerDevicePayload derives display name and sysid from Model;
+// observed NUT topology may independently supply outlet rows.
 type DeviceProfile struct {
 	Model           string
 	FirmwareVersion string
@@ -70,6 +100,19 @@ func ResolveProfile(profile DeviceProfile) (ProfileMetadata, error) {
 		return ProfileMetadata{}, err
 	}
 	return spec.metadata, nil
+}
+
+// ReadOnlySmartPowerCapabilities returns the small, understood allowlist that
+// this read-only gateway can truthfully expose. Genuine firmware masks also
+// contain unresolved high bits; retaining unknown capabilities on the wire
+// would be fail-open. Their exact masks remain reference metadata in profileSpec.
+func ReadOnlySmartPowerCapabilities(profile DeviceProfile) (int64, error) {
+	spec, err := specForProfile(profile)
+	if err != nil {
+		return 0, err
+	}
+	return spec.smartPowerCaps & (SmartPowerCapabilityNUTInformationAccess |
+		SmartPowerCapabilitySafeShutdownAndCycleTime), nil
 }
 
 func specForProfile(profile DeviceProfile) (profileSpec, error) {
@@ -121,20 +164,24 @@ func specForProfile(profile DeviceProfile) (profileSpec, error) {
 }
 
 // PowerDeviceReport is the complete typed input for one emulated UniFi power
-// device inform. Outlet count and relay groups are validated against Profile.
+// device inform. Profile owns the controller-known wire identity, while
+// OutletTopologySource distinguishes exact firmware reference data, the
+// runtime's conservative carrier fallback, and a NUT observation.
 type PowerDeviceReport struct {
-	Profile      DeviceProfile
-	Identity     DeviceIdentity
-	Adoption     AdoptionState
-	ObservedAt   time.Time
-	Uptime       time.Duration
-	LastInformAt time.Time
-	Capabilities Capabilities
-	System       SystemStats
-	VBMS         VBMSTelemetry
-	Interface    InterfaceTelemetry
-	Outlets      []OutletTelemetry
-	BeepEnabled  *bool
+	Profile              DeviceProfile
+	OutletTopologySource OutletTopologySource
+	Identity             DeviceIdentity
+	Adoption             AdoptionState
+	ObservedAt           time.Time
+	Uptime               time.Duration
+	LastInformAt         time.Time
+	Capabilities         Capabilities
+	System               SystemStats
+	VBMS                 VBMSTelemetry
+	Interface            InterfaceTelemetry
+	Outlets              []OutletTelemetry
+	BeepEnabled          *bool
+	NUTServer            *NUTServerAdvertisement
 }
 
 func (r PowerDeviceReport) String() string {
@@ -218,7 +265,17 @@ type InterfaceTelemetry struct {
 	Up      *bool
 }
 
+// NUTServerAdvertisement is an explicit operator assertion that a separate,
+// unauthenticated NUT server is reachable at this emulated device's LAN IP.
+// Credentials are intentionally not representable or serialized.
+type NUTServerAdvertisement struct {
+	Enabled bool
+	ID      string
+	Port    int
+}
+
 type OutletTelemetry struct {
+	Index             int
 	Name              string
 	Capabilities      *int
 	RelayGroup        int
@@ -273,6 +330,7 @@ type powerDevicePayload struct {
 	OutletTable       []wireOutlet     `json:"outlet_table"`
 	PortTable         []wirePort       `json:"port_table"`
 	BeepEnabled       *bool            `json:"beep_enabled,omitempty"`
+	NUTServer         *wireNUTServer   `json:"nut_server,omitempty"`
 }
 
 type wireSystemStats struct {
@@ -340,6 +398,13 @@ type wirePort struct {
 	Media      string `json:"media"`
 	PortIndex  int    `json:"port_idx"`
 	Up         *bool  `json:"up,omitempty"`
+}
+
+type wireNUTServer struct {
+	Enabled            bool   `json:"enabled"`
+	ID                 string `json:"id"`
+	Port               int    `json:"port"`
+	CredentialRequired bool   `json:"credential_required"`
 }
 
 // BuildPowerDevicePayload validates r and emits the exact firmware-observed
@@ -430,17 +495,27 @@ func BuildPowerDevicePayload(r PowerDeviceReport) ([]byte, error) {
 		PortTable:   []wirePort{{IsUplink: true, FullDuplex: true, Media: "FE", PortIndex: 1, Up: r.Interface.Up}},
 		BeepEnabled: r.BeepEnabled,
 	}
+	if r.NUTServer != nil {
+		p.NUTServer = &wireNUTServer{
+			Enabled: true, ID: r.NUTServer.ID, Port: r.NUTServer.Port,
+			CredentialRequired: false,
+		}
+	}
 	for outletIndex, outlet := range r.Outlets {
 		outletCapabilities := outlet.Capabilities
-		if len(spec.outletCaps) != 0 {
+		if r.OutletTopologySource == OutletTopologyProfile && len(spec.outletCaps) != 0 {
 			outletCapabilities = intPointer(spec.outletCaps[outletIndex])
+		}
+		wireIndex := outlet.Index
+		if wireIndex == 0 {
+			wireIndex = outletIndex + 1
 		}
 		var buttonGroup *int
 		if outlet.ButtonGroup > 0 {
 			buttonGroup = intPointer(outlet.ButtonGroup)
 		}
 		p.OutletTable = append(p.OutletTable, wireOutlet{
-			Index: outletIndex + 1, Capabilities: outletCapabilities,
+			Index: wireIndex, Capabilities: outletCapabilities,
 			RelayGroup: outlet.RelayGroup, RelayState: outlet.RelayState,
 			ButtonGroup: buttonGroup, ButtonState: outlet.ButtonState,
 			Name: outlet.Name, VoltageV: outlet.VoltageV, CurrentA: outlet.CurrentA,
@@ -480,6 +555,9 @@ func validatePowerDeviceReport(r PowerDeviceReport, spec profileSpec) error {
 	if !optionalFloatRange(r.System.MemoryPercent, 0, 100) || !optionalFloatRange(r.System.CPUPercent, 0, 100) {
 		return errors.New("inform: invalid system utilization")
 	}
+	if r.NUTServer != nil && (!r.NUTServer.Enabled || !validToken(r.NUTServer.ID, 31) || r.NUTServer.Port < 1 || r.NUTServer.Port > 65535) {
+		return errors.New("inform: invalid NUT server advertisement")
+	}
 	b := r.VBMS.Battery
 	if !optionalIntRange(b.AvailableCount, 0, math.MaxInt) || !optionalIntRange(b.ReadyCount, 0, math.MaxInt) ||
 		!optionalIntRange(b.LevelPercent, 0, 100) || !optionalIntRange(b.TotalPowerBudgetW, 0, math.MaxInt) {
@@ -518,21 +596,91 @@ func validatePowerDeviceReport(r PowerDeviceReport, spec profileSpec) error {
 	if net.ParseIP(r.Interface.IP).To4() == nil || maskIP == nil || bits != 32 || ones < 0 || r.Interface.IP != r.Identity.IP {
 		return errors.New("inform: invalid interface IPv4 configuration")
 	}
-	if len(r.Outlets) != spec.metadata.OutletCount {
-		return fmt.Errorf("inform: profile requires exactly %d outlets", spec.metadata.OutletCount)
+	switch r.OutletTopologySource {
+	case OutletTopologyProfile:
+		if len(r.Outlets) != spec.metadata.OutletCount {
+			return fmt.Errorf("inform: profile requires exactly %d outlets", spec.metadata.OutletCount)
+		}
+	case OutletTopologyCarrierFallback:
+		if len(r.Outlets) != spec.metadata.OutletCount {
+			return fmt.Errorf("inform: carrier fallback requires exactly %d outlets", spec.metadata.OutletCount)
+		}
+	case OutletTopologyObservedNUT:
+		if len(r.Outlets) < 1 || len(r.Outlets) > maxOutletCount {
+			return fmt.Errorf("inform: observed NUT topology requires 1..%d outlets", maxOutletCount)
+		}
+	default:
+		return errors.New("inform: invalid outlet topology source")
 	}
 	if err := validateCapabilities(r.Capabilities, spec); err != nil {
 		return err
 	}
+	observedGroups := make(map[int]struct{}, len(r.Outlets))
+	observedGroupRelayState := make(map[int]int, len(r.Outlets))
+	nextObservedGroup := 1
 	for outletIndex, outlet := range r.Outlets {
 		if !validText(outlet.Name, 128) {
 			return errors.New("inform: invalid outlet name")
 		}
 		if !optionalIntRange(outlet.Capabilities, 0, math.MaxInt) || !optionalIntRange(outlet.PowerW, 0, math.MaxInt) ||
-			outlet.RelayGroup < 1 || outlet.ButtonGroup < 0 || !optionalFloatRange(outlet.PowerFactor, 0, 1) {
+			outlet.RelayGroup < 1 || outlet.RelayGroup > len(r.Outlets) || outlet.ButtonGroup < 0 || outlet.ButtonGroup > len(r.Outlets) ||
+			!optionalFloatRange(outlet.PowerFactor, 0, 1) {
 			return errors.New("inform: invalid outlet measurement or group")
 		}
-		if r.Profile.Model == ModelUPS2UEU {
+		wireIndex := outlet.Index
+		if wireIndex == 0 {
+			wireIndex = outletIndex + 1
+		}
+		if wireIndex != outletIndex+1 {
+			return errors.New("inform: outlet indices must be contiguous and ordered")
+		}
+		if r.OutletTopologySource == OutletTopologyCarrierFallback || r.OutletTopologySource == OutletTopologyObservedNUT {
+			if outlet.Index == 0 || outlet.Capabilities == nil {
+				return errors.New("inform: projected outlet requires explicit index and capabilities")
+			}
+			const allowed = OutletCapabilityHasRelay | OutletCapabilityPowerMeter | OutletCapabilityAC | OutletCapabilityUSB
+			if *outlet.Capabilities&^allowed != 0 {
+				return errors.New("inform: projected outlet has unsupported capabilities")
+			}
+			physicalType := *outlet.Capabilities & (OutletCapabilityAC | OutletCapabilityUSB)
+			if physicalType != OutletCapabilityAC && physicalType != OutletCapabilityUSB {
+				return errors.New("inform: projected outlet requires exactly one physical type")
+			}
+			if outlet.ButtonGroup != 0 || outlet.ButtonState != nil {
+				return errors.New("inform: projected topology cannot infer physical buttons")
+			}
+			if _, seen := observedGroups[outlet.RelayGroup]; !seen {
+				if outlet.RelayGroup != nextObservedGroup {
+					return errors.New("inform: observed NUT relay groups must be dense in first-occurrence order")
+				}
+				observedGroups[outlet.RelayGroup] = struct{}{}
+				nextObservedGroup++
+			}
+			relayState := 0
+			if outlet.RelayState != nil {
+				relayState = 1
+				if *outlet.RelayState {
+					relayState = 2
+				}
+			}
+			if prior, seen := observedGroupRelayState[outlet.RelayGroup]; seen && prior != relayState {
+				return errors.New("inform: observed NUT relay group states must be consistent")
+			}
+			observedGroupRelayState[outlet.RelayGroup] = relayState
+			if (outlet.CurrentA != nil || outlet.PowerW != nil) && *outlet.Capabilities&OutletCapabilityPowerMeter == 0 {
+				return errors.New("inform: observed NUT current or power requires POWER_METER capability")
+			}
+			if outlet.EnergyOneDayWh != nil || outlet.EnergySevenDayWh != nil || outlet.EnergyThirtyDayWh != nil {
+				return errors.New("inform: observed NUT topology has no rolling-energy projection")
+			}
+			if r.OutletTopologySource == OutletTopologyCarrierFallback {
+				if *outlet.Capabilities != OutletCapabilityAC || outlet.RelayState != nil ||
+					outlet.VoltageV != nil || outlet.CurrentA != nil || outlet.PowerW != nil || outlet.PowerFactor != nil {
+					return errors.New("inform: carrier fallback may expose only AC-compatible topology")
+				}
+			}
+		}
+		if r.OutletTopologySource == OutletTopologyProfile && r.Profile.Model == ModelUPS2UEU {
 			expectedGroup := outletIndex/4 + 1
 			expectedButtonGroup := 0
 			if outletIndex < 4 {
@@ -549,7 +697,7 @@ func validatePowerDeviceReport(r PowerDeviceReport, spec profileSpec) error {
 				return errors.New("inform: USWDA26 firmware does not expose per-outlet electrical telemetry")
 			}
 		}
-		if r.Profile.Model == ModelUPS2UProEU {
+		if r.OutletTopologySource == OutletTopologyProfile && r.Profile.Model == ModelUPS2UProEU {
 			index := outletIndex + 1
 			if outlet.RelayGroup != index || outlet.ButtonGroup != index {
 				return errors.New("inform: USPDA2C outlets require individual relay/button groups")
@@ -558,7 +706,7 @@ func validatePowerDeviceReport(r PowerDeviceReport, spec profileSpec) error {
 				return errors.New("inform: USPDA2C outlet capabilities do not match firmware profile")
 			}
 		}
-		if r.Profile.Model == ModelUPS2UEU && outlet.Capabilities != nil && *outlet.Capabilities != spec.outletCaps[outletIndex] {
+		if r.OutletTopologySource == OutletTopologyProfile && r.Profile.Model == ModelUPS2UEU && outlet.Capabilities != nil && *outlet.Capabilities != spec.outletCaps[outletIndex] {
 			return errors.New("inform: USWDA26 outlet capabilities do not match firmware profile")
 		}
 		for _, value := range []*float64{outlet.VoltageV, outlet.CurrentA, outlet.EnergyOneDayWh, outlet.EnergySevenDayWh, outlet.EnergyThirtyDayWh} {
@@ -599,7 +747,6 @@ func validateCapabilities(value Capabilities, spec profileSpec) error {
 		{value.Hardware, spec.hwCaps},
 		{value.SysError, spec.sysErrorCaps},
 		{value.Adoption, spec.adoptionCaps},
-		{value.SmartPower, spec.smartPowerCaps},
 	}
 	for _, field := range fields {
 		if field.value == nil {
@@ -612,6 +759,11 @@ func validateCapabilities(value Capabilities, spec profileSpec) error {
 			return errors.New("inform: capability bitmap does not match firmware profile")
 		}
 	}
+	if value.SmartPower != nil {
+		if *value.SmartPower < 0 || (spec.capabilitiesKnown && *value.SmartPower&^spec.smartPowerCaps != 0) {
+			return errors.New("inform: smart-power capability bitmap is not a firmware-supported subset")
+		}
+	}
 	return nil
 }
 
@@ -619,8 +771,12 @@ func resolveCapabilities(value Capabilities, spec profileSpec) Capabilities {
 	if !spec.capabilitiesKnown {
 		return value
 	}
+	smartPower := int64Pointer(spec.smartPowerCaps)
+	if value.SmartPower != nil {
+		smartPower = int64Pointer(*value.SmartPower)
+	}
 	return Capabilities{
-		Firmware: int64Pointer(spec.fwCaps), SmartPower: int64Pointer(spec.smartPowerCaps),
+		Firmware: int64Pointer(spec.fwCaps), SmartPower: smartPower,
 		Hardware: int64Pointer(spec.hwCaps), SysError: int64Pointer(spec.sysErrorCaps),
 		Adoption: int64Pointer(spec.adoptionCaps),
 	}

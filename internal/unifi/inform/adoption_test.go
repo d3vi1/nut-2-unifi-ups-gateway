@@ -46,6 +46,29 @@ func TestMgmtCfgAcceptsFirmwareBooleanTokensAndCRSeparators(t *testing.T) {
 	}
 }
 
+func TestUnsupportedPowerAndNUTServerSettingsAreReportedWithoutValues(t *testing.T) {
+	state, err := NewAdoptionState("http://unifi:8080/inform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "must-not-escape"
+	body := []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=next\n","system_cfg":"nutserver.status=enabled\nnutserver.id=ups\nnutserver.port=3493\nnutserver.password=` + secret + `\npower_cycle_on_ac_recovery.status=enabled\npower_cycle_on_ac_recovery.time=60\nbeep.status=disabled\noutlet.status=disabled\nepo.status=enabled\n"}`)
+	outcome, err := state.ApplyControllerResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"nut-server", "power-cycle-on-ac-recovery", "buzzer", "outlet-power", "emergency-power-off"}
+	if fmt.Sprint(outcome.UnsupportedSettings) != fmt.Sprint(want) {
+		t.Fatalf("unsupported settings = %v, want %v", outcome.UnsupportedSettings, want)
+	}
+	if strings.Contains(fmt.Sprint(outcome), secret) {
+		t.Fatal("unsupported settings outcome retained a controller-supplied value")
+	}
+	if state.CfgVersion != "next" || !state.Adopted {
+		t.Fatalf("safe adoption fields were not applied: %+v", redactedAdoption(state))
+	}
+}
+
 func TestSetParamAdoptsKeyAndInformURLTransactionally(t *testing.T) {
 	state, err := NewAdoptionState("http://unifi:8080/inform")
 	if err != nil {

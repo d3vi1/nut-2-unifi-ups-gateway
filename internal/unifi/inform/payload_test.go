@@ -2,6 +2,7 @@ package inform
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -147,6 +148,45 @@ func TestKnownFalseAndZeroTelemetryIsPreserved(t *testing.T) {
 	}
 }
 
+func TestExplicitNUTServerAdvertisementHasBoundedCredentialFreeWireShape(t *testing.T) {
+	report := basePowerReport(ModelUPS2UEU, "1.6.1", 8)
+	report.NUTServer = &NUTServerAdvertisement{Enabled: true, ID: "ups", Port: 3493}
+	payload, err := BuildPowerDevicePayload(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatal(err)
+	}
+	server := document["nut_server"].(map[string]any)
+	if server["enabled"] != true || server["id"] != "ups" || server["port"] != float64(3493) || server["credential_required"] != false {
+		t.Fatalf("unexpected NUT server wire shape: %+v", server)
+	}
+	for _, forbidden := range []string{"username", "password"} {
+		if _, exists := server[forbidden]; exists {
+			t.Fatalf("NUT server advertisement serialized forbidden %s", forbidden)
+		}
+	}
+
+	for name, advertisement := range map[string]NUTServerAdvertisement{
+		"disabled object": {Enabled: false, ID: "ups", Port: 3493},
+		"empty id":        {Enabled: true, ID: "", Port: 3493},
+		"unsafe id":       {Enabled: true, ID: "rack ups", Port: 3493},
+		"long id":         {Enabled: true, ID: "abcdefghijklmnopqrstuvwxyz123456", Port: 3493},
+		"zero port":       {Enabled: true, ID: "ups", Port: 0},
+		"large port":      {Enabled: true, ID: "ups", Port: 65536},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := basePowerReport(ModelUPS2UEU, "1.6.1", 8)
+			candidate.NUTServer = &advertisement
+			if _, err := BuildPowerDevicePayload(candidate); err == nil {
+				t.Fatal("invalid NUT server advertisement was accepted")
+			}
+		})
+	}
+}
+
 func TestAdoptedPayloadUsesFirmwareSteadyStateTwo(t *testing.T) {
 	report := basePowerReport(ModelUPS2UEU, "1.6.1", 8)
 	report.Adoption.AuthKey = controllerTestKey
@@ -282,11 +322,313 @@ func TestUSWDA26RejectsCapabilityDrift(t *testing.T) {
 	}
 }
 
+func TestSmartPowerCapabilitiesAllowOnlyFirmwareSupportedSubsets(t *testing.T) {
+	report := basePowerReport(ModelUPS2UEU, "1.6.1", 8)
+	readOnly, err := ReadOnlySmartPowerCapabilities(report.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readOnly != 9 || readOnly&SmartPowerCapabilityCycleOnACRecovery != 0 || readOnly&SmartPowerCapabilityBuzzerControl != 0 || readOnly&SmartPowerCapabilityEmergencyPowerOff != 0 || readOnly&SmartPowerCapabilitySafeShutdownAndCycleTime == 0 || readOnly&0xc0 != 0 {
+		t.Fatalf("USWDA26 read-only smart-power bitmap = %#x", readOnly)
+	}
+	report.Capabilities.SmartPower = pointer(readOnly)
+	payload, err := BuildPowerDevicePayload(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["smart_power_caps"] != float64(readOnly) {
+		t.Fatalf("explicit supported subset was replaced: %v", document["smart_power_caps"])
+	}
+
+	report.Capabilities.SmartPower = pointer(int64(143 | SmartPowerCapabilityEmergencyPowerOff))
+	if _, err := BuildPowerDevicePayload(report); err == nil {
+		t.Fatal("smart-power bitmap with unsupported extra bit was accepted")
+	}
+
+	pro := DeviceProfile{Model: ModelUPS2UProEU, FirmwareVersion: "1.6.1"}
+	proReadOnly, err := ReadOnlySmartPowerCapabilities(pro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proReadOnly != 9 {
+		t.Fatalf("USPDA2C read-only smart-power bitmap = %#x, want 0x09", proReadOnly)
+	}
+}
+
 func TestUSWDA26RejectsFirmwareAbsentOutletMeasurements(t *testing.T) {
 	report := basePowerReport(ModelUPS2UEU, "1.6.1", 8)
 	report.Outlets[0].VoltageV = pointer(float64(230))
 	if _, err := BuildPowerDevicePayload(report); err == nil {
 		t.Fatal("USWDA26 per-outlet voltage unsupported by firmware was accepted")
+	}
+}
+
+func TestObservedNUTTopologyUsesKnownCarrierWithoutImpersonatingItsOutletLayout(t *testing.T) {
+	report := observedNUTPowerReport(3)
+	report.Outlets = []OutletTelemetry{
+		{
+			Index:        1,
+			Name:         "USB-C management",
+			Capabilities: pointer(OutletCapabilityUSB | OutletCapabilityHasRelay),
+			RelayGroup:   1,
+			RelayState:   pointer(true),
+		},
+		{
+			Index:        2,
+			Name:         "Metered rack feed",
+			Capabilities: pointer(OutletCapabilityAC | OutletCapabilityPowerMeter),
+			RelayGroup:   1,
+			RelayState:   pointer(true),
+			VoltageV:     pointer(230.4),
+			CurrentA:     pointer(1.37),
+			PowerW:       pointer(242),
+			PowerFactor:  pointer(0.77),
+		},
+		{
+			Index:        3,
+			Name:         "Independent AC",
+			Capabilities: pointer(OutletCapabilityAC | OutletCapabilityHasRelay | OutletCapabilityPowerMeter),
+			RelayGroup:   2,
+			RelayState:   pointer(false),
+			CurrentA:     pointer(0.25),
+			PowerW:       pointer(41),
+		},
+	}
+
+	payload, err := BuildPowerDevicePayload(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["model"] != "UPS26" || document["version"] != "1.6.1.413" {
+		t.Fatalf("observed topology changed the controller-known carrier: model=%v version=%v", document["model"], document["version"])
+	}
+	outlets := document["outlet_table"].([]any)
+	if len(outlets) != 3 {
+		t.Fatalf("outlet_table length = %d, want observed count 3", len(outlets))
+	}
+	first := outlets[0].(map[string]any)
+	second := outlets[1].(map[string]any)
+	third := outlets[2].(map[string]any)
+	if first["index"] != float64(1) || first["relay_group"] != float64(1) || first["outlet_caps"] != float64(OutletCapabilityUSB|OutletCapabilityHasRelay) {
+		t.Fatalf("first observed outlet was rewritten: %+v", first)
+	}
+	if second["index"] != float64(2) || second["relay_group"] != float64(1) || second["outlet_caps"] != float64(OutletCapabilityAC|OutletCapabilityPowerMeter) {
+		t.Fatalf("second observed outlet was rewritten: %+v", second)
+	}
+	if second["outlet_voltage"] != 230.4 || second["outlet_current"] != 1.37 || second["outlet_power"] != float64(242) || second["outlet_power_factor"] != 0.77 {
+		t.Fatalf("observed AC measurements were not preserved: %+v", second)
+	}
+	if third["index"] != float64(3) || third["relay_group"] != float64(2) || third["outlet_caps"] != float64(OutletCapabilityAC|OutletCapabilityHasRelay|OutletCapabilityPowerMeter) {
+		t.Fatalf("third observed outlet was rewritten: %+v", third)
+	}
+	for index, outlet := range []map[string]any{first, second, third} {
+		if _, exists := outlet["button_group"]; exists {
+			t.Fatalf("observed outlet %d invented a physical button: %+v", index+1, outlet)
+		}
+	}
+}
+
+func TestObservedNUTTopologyIsIndependentOfKnownCarrier(t *testing.T) {
+	report := observedNUTPowerReport(2)
+	report.Profile = DeviceProfile{Model: ModelUPS2UProEU, FirmwareVersion: "1.6.1"}
+	report.Outlets[0].RelayGroup = 1
+	report.Outlets[1].RelayGroup = 1
+	report.Outlets[1].Capabilities = pointer(OutletCapabilityUSB | OutletCapabilityPowerMeter)
+	report.Outlets[1].CurrentA = pointer(0.4)
+
+	payload, err := BuildPowerDevicePayload(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(payload, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["model"] != "UPS-2U-Pro" || document["version"] != "1.6.1.4933" {
+		t.Fatalf("known carrier fingerprint drifted: model=%v version=%v", document["model"], document["version"])
+	}
+	outlets := document["outlet_table"].([]any)
+	if len(outlets) != 2 {
+		t.Fatalf("carrier overrode observed outlet count: got %d, want 2", len(outlets))
+	}
+	second := outlets[1].(map[string]any)
+	if second["relay_group"] != float64(1) || second["outlet_caps"] != float64(OutletCapabilityUSB|OutletCapabilityPowerMeter) || second["outlet_current"] != 0.4 {
+		t.Fatalf("carrier overrode observed outlet projection: %+v", second)
+	}
+	if _, exists := second["button_group"]; exists {
+		t.Fatalf("observed topology inherited a carrier button group: %+v", second)
+	}
+}
+
+func TestObservedNUTTopologyAcceptsBoundedContiguousOutletCounts(t *testing.T) {
+	for _, count := range []int{1, 3, maxOutletCount} {
+		t.Run(fmt.Sprintf("count-%d", count), func(t *testing.T) {
+			report := observedNUTPowerReport(count)
+			payload, err := BuildPowerDevicePayload(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(payload, &document); err != nil {
+				t.Fatal(err)
+			}
+			outlets := document["outlet_table"].([]any)
+			if len(outlets) != count {
+				t.Fatalf("outlet_table length = %d, want %d", len(outlets), count)
+			}
+			last := outlets[len(outlets)-1].(map[string]any)
+			if last["index"] != float64(count) {
+				t.Fatalf("last observed index = %v, want %d", last["index"], count)
+			}
+		})
+	}
+}
+
+func TestObservedNUTTopologyRejectsUnsafeOrAmbiguousOutletShape(t *testing.T) {
+	tests := []struct {
+		name   string
+		count  int
+		mutate func(*PowerDeviceReport)
+	}{
+		{
+			name: "missing capabilities",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = nil
+			},
+		},
+		{
+			name: "noncontiguous index",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[1].Index = 3
+			},
+		},
+		{
+			name: "conflicting relay states in one group",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityHasRelay)
+				report.Outlets[1].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityHasRelay)
+				report.Outlets[0].RelayGroup = 1
+				report.Outlets[1].RelayGroup = 1
+				report.Outlets[0].RelayState = pointer(true)
+				report.Outlets[1].RelayState = pointer(false)
+			},
+		},
+		{
+			name: "partial relay state in one group",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityHasRelay)
+				report.Outlets[1].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityHasRelay)
+				report.Outlets[0].RelayGroup = 1
+				report.Outlets[1].RelayGroup = 1
+				report.Outlets[0].RelayState = pointer(true)
+				report.Outlets[1].RelayState = nil
+			},
+		},
+		{
+			name: "non-dense first relay group",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].RelayGroup = 2
+				report.Outlets[1].RelayGroup = 2
+			},
+		},
+		{
+			name: "relay groups not ordered by first occurrence",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].RelayGroup = 2
+				report.Outlets[1].RelayGroup = 1
+			},
+		},
+		{
+			name: "mixed AC and USB physical type",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityUSB)
+			},
+		},
+		{
+			name: "missing projected physical type",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = pointer(OutletCapabilityHasRelay)
+			},
+		},
+		{
+			name: "unsupported automatic relay bit",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityAutoRelay)
+			},
+		},
+		{
+			name: "physical button group",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].ButtonGroup = 1
+			},
+		},
+		{
+			name: "physical button state",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].ButtonState = pointer(true)
+			},
+		},
+		{
+			name: "current without power-meter capability",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].CurrentA = pointer(0.4)
+			},
+		},
+		{
+			name: "real power without power-meter capability",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].PowerW = pointer(40)
+			},
+		},
+		{
+			name: "one-day rolling energy",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityPowerMeter)
+				report.Outlets[0].EnergyOneDayWh = pointer(10.0)
+			},
+		},
+		{
+			name: "seven-day rolling energy",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityPowerMeter)
+				report.Outlets[0].EnergySevenDayWh = pointer(70.0)
+			},
+		},
+		{
+			name: "thirty-day rolling energy",
+			mutate: func(report *PowerDeviceReport) {
+				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityPowerMeter)
+				report.Outlets[0].EnergyThirtyDayWh = pointer(300.0)
+			},
+		},
+		{
+			name:  "more than bounded maximum",
+			count: maxOutletCount + 1,
+			mutate: func(*PowerDeviceReport) {
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			count := test.count
+			if count == 0 {
+				count = 2
+			}
+			report := observedNUTPowerReport(count)
+			test.mutate(&report)
+			if _, err := BuildPowerDevicePayload(report); err == nil {
+				t.Fatal("unsafe or ambiguous observed NUT outlet shape was accepted")
+			}
+		})
 	}
 }
 
@@ -346,6 +688,20 @@ func basePowerReport(model, firmware string, outletCount int) PowerDeviceReport 
 		}
 		report.Outlets[i] = OutletTelemetry{
 			Name: "Outlet " + string(rune('1'+i)), RelayGroup: group, ButtonGroup: buttonGroup,
+		}
+	}
+	return report
+}
+
+func observedNUTPowerReport(outletCount int) PowerDeviceReport {
+	report := basePowerReport(ModelUPS2UEU, "1.6.1", outletCount)
+	report.OutletTopologySource = OutletTopologyObservedNUT
+	for index := range report.Outlets {
+		report.Outlets[index] = OutletTelemetry{
+			Index:        index + 1,
+			Name:         fmt.Sprintf("Observed outlet %d", index+1),
+			Capabilities: pointer(OutletCapabilityAC),
+			RelayGroup:   index + 1,
 		}
 	}
 	return report
