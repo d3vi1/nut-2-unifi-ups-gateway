@@ -71,6 +71,12 @@ That command formats the Go source, runs tests with the race detector, runs
 Container or workflow changes must also build the rootless `scratch` image for
 all four targets.
 
+The Buildx version and binary checksum and the BuildKit image digest in
+`.github/actions/setup-pinned-buildx/action.yml` form one reviewed toolchain
+unit. Update and verify all three together, then update the exact regression
+constants in `internal/buildtest/buildx_test.go`; never substitute a moving tag
+or a checksum downloaded at workflow runtime.
+
 ## Classify evidence
 
 Use the repository vocabulary precisely:

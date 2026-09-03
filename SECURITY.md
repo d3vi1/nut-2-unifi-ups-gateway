@@ -54,6 +54,10 @@ administer. Coordinate any live power-path test with the operator.
 - Tagged releases provide an attested multi-platform OCI digest and a
   checksum-verified deployment bundle pinned to that digest. The supplied
   Compose file refuses to render without an explicit `N2U_IMAGE`.
+- Container workflows install an exact Buildx artifact only after verifying its
+  reviewed SHA-256 and bootstrap BuildKit from an OCI digest. GitHub's hosted
+  runner and its preinstalled operating-system tools remain the external build
+  platform trust root.
 - Secrets are accepted through files; the example deployment does not place a
   NUT password in Compose or `.env`.
 

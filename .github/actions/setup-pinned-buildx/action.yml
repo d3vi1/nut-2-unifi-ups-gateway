@@ -1,0 +1,61 @@
+name: Set up pinned Buildx
+description: Install a checksum-verified Buildx client and a digest-pinned BuildKit builder
+
+outputs:
+  builder:
+    description: Name of the pinned docker-container builder
+    value: ${{ steps.setup.outputs.builder }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install and bootstrap immutable builder components
+      id: setup
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ "$RUNNER_OS" != "Linux" || "$RUNNER_ARCH" != "X64" ]]; then
+          echo "The reviewed Buildx artifact supports only Linux X64 GitHub-hosted runners." >&2
+          exit 1
+        fi
+
+        buildx_version="v0.37.0"
+        buildx_sha256="ae43fa08c796b44efc86d7a63c55f73f7c35f3101188dea7bf93bcd6f99577ba"
+        buildkit_image="moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3"
+        docker_config="$RUNNER_TEMP/n2u-docker-config"
+        plugin_dir="$docker_config/cli-plugins"
+        plugin_path="$plugin_dir/docker-buildx"
+        download_path="$RUNNER_TEMP/buildx-${buildx_version}.linux-amd64"
+        builder_name="n2u-pinned-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+        mkdir -p "$plugin_dir"
+        curl --fail --location \
+          --proto '=https' \
+          --proto-redir '=https' \
+          --tlsv1.2 \
+          --retry 3 \
+          --retry-all-errors \
+          --connect-timeout 20 \
+          --max-time 300 \
+          --output "$download_path" \
+          "https://github.com/docker/buildx/releases/download/${buildx_version}/buildx-${buildx_version}.linux-amd64"
+        printf '%s  %s\n' "$buildx_sha256" "$download_path" | sha256sum --check --strict -
+        install -m 0755 "$download_path" "$plugin_path"
+
+        export DOCKER_CONFIG="$docker_config"
+        printf 'DOCKER_CONFIG=%s\n' "$docker_config" >> "$GITHUB_ENV"
+
+        installed_version=$(docker buildx version | awk '{print $2}')
+        if [[ "$installed_version" != "$buildx_version" ]]; then
+          echo "Unexpected Buildx version: $installed_version" >&2
+          exit 1
+        fi
+
+        docker buildx create \
+          --name "$builder_name" \
+          --driver docker-container \
+          --driver-opt "image=$buildkit_image" \
+          --use
+        docker buildx inspect "$builder_name" --bootstrap
+        printf 'builder=%s\n' "$builder_name" >> "$GITHUB_OUTPUT"
