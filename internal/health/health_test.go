@@ -1,9 +1,13 @@
 package health
 
 import (
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -92,3 +96,136 @@ func TestServerBoundsRequestHeaders(t *testing.T) {
 		t.Fatal("health server must retain bounded I/O timeouts")
 	}
 }
+
+func TestLimitedListenerBoundsAggregateConnections(t *testing.T) {
+	underlying := newQueuedListener()
+	listener := limitConnections(underlying, 1)
+	firstServer, firstClient := net.Pipe()
+	defer firstClient.Close()
+	underlying.connections <- firstServer
+	first, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondResult := make(chan error, 1)
+	secondServer, secondClient := net.Pipe()
+	defer secondClient.Close()
+	underlying.connections <- secondServer
+	go func() {
+		connection, err := listener.Accept()
+		if connection != nil {
+			_ = connection.Close()
+		}
+		secondResult <- err
+	}()
+
+	select {
+	case err := <-secondResult:
+		t.Fatalf("second connection escaped the aggregate limit: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := underlying.acceptCalls.Load(); got != 1 {
+		t.Fatalf("underlying Accept calls = %d, want 1 while capacity is full", got)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-secondResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second Accept did not proceed after capacity was released")
+	}
+	if got := underlying.acceptCalls.Load(); got != 2 {
+		t.Fatalf("underlying Accept calls = %d, want 2", got)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLimitedListenerCloseUnblocksSaturatedAccept(t *testing.T) {
+	underlying := newQueuedListener()
+	listener := limitConnections(underlying, 1)
+	server, client := net.Pipe()
+	defer client.Close()
+	underlying.connections <- server
+	accepted, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer accepted.Close()
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := listener.Accept()
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("capacity-blocked Accept returned before close: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("second listener close = %v, want idempotent success", err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("blocked Accept error = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closing listener did not wake capacity-blocked Accept")
+	}
+}
+
+func TestLimitedConnectionReleasesCapacityOnce(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	var releases atomic.Int32
+	connection := &limitedConnection{Conn: server, release: func() { releases.Add(1) }}
+	_ = connection.Close()
+	_ = connection.Close()
+	if got := releases.Load(); got != 1 {
+		t.Fatalf("capacity releases = %d, want 1", got)
+	}
+}
+
+type queuedListener struct {
+	connections chan net.Conn
+	done        chan struct{}
+	closeOnce   sync.Once
+	acceptCalls atomic.Int32
+}
+
+func newQueuedListener() *queuedListener {
+	return &queuedListener{connections: make(chan net.Conn, 4), done: make(chan struct{})}
+}
+
+func (l *queuedListener) Accept() (net.Conn, error) {
+	l.acceptCalls.Add(1)
+	select {
+	case connection := <-l.connections:
+		return connection, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *queuedListener) Close() error {
+	l.closeOnce.Do(func() { close(l.done) })
+	return nil
+}
+
+func (*queuedListener) Addr() net.Addr { return testAddress("health-test") }
+
+type testAddress string
+
+func (a testAddress) Network() string { return string(a) }
+func (a testAddress) String() string  { return string(a) }

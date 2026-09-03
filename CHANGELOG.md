@@ -3,7 +3,7 @@
 All notable changes are documented here. The project follows
 [Semantic Versioning](https://semver.org/) after its first tagged release.
 
-## 0.9.0 - 2026-09-03
+## 0.9.0 - 2026-09-04
 
 ### Added
 
@@ -44,6 +44,15 @@ All notable changes are documented here. The project follows
   state-changing replay windows. State-changing nonces are persisted with the
   adoption transition so routine `noop` responses cannot evict rollback
   protection or force a state-file write on every inform.
+- Controller-provided inform intervals are now observation-only; the local
+  `N2U_INFORM_INTERVAL` is authoritative, so a captured cadence reply cannot
+  regain an effect after restart and routine informs do not wear the state
+  volume.
+- After a controller key is installed, adopted CBC replies over plain HTTP are
+  acknowledgement-only. State, reset, key, reboot, upgrade, and cadence effects
+  require GCM or trusted HTTPS; a same-key one-way GCM upgrade remains allowed.
+- The identity-free health listener now has a shutdown-safe aggregate
+  connection cap in addition to its existing time and header bounds.
 - Tagged releases now publish an attested multi-platform digest and a
   checksum-verified Synology bundle whose generated `.env` uses that exact OCI
   digest. Compose fails closed if `N2U_IMAGE` is absent instead of pulling a
@@ -51,6 +60,8 @@ All notable changes are documented here. The project follows
 - The Dockerfile frontend, Buildx client artifact, and BuildKit builder image
   are pinned to reviewed content digests or checksums so release tooling cannot
   drift behind mutable defaults.
+- Publishing builds are explicitly cache-cold and the official BuildKit Syft
+  SBOM generator is pinned to a reviewed version and OCI index digest.
 
 ## 0.1.0-alpha.1 - 2026-09-02
 

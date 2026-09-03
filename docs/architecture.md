@@ -16,9 +16,9 @@ The runtime has five deliberately small components:
 4. UniFi discovery and encrypted inform codecs.
 5. An identity-free health/metrics endpoint.
 
-Only the state file is writable. It contains the generated identity and UniFi
-inform key, is written atomically with mode `0600`, and belongs on a private
-persistent volume.
+Only the private state volume is writable. The process atomically replaces the
+`0600` state file and may create temporary siblings in that directory; the file
+contains the generated identity and UniFi inform key.
 
 ## Why host networking on Synology
 
@@ -27,8 +27,10 @@ different source address even when it targets the NAS, while host networking can
 use loopback exactly as a local client. UniFi discovery also uses UDP broadcast.
 
 Host networking does not require root here: NUT uses TCP/3493, discovery uses
-UDP/10001, and the health endpoint uses TCP/9199. The container drops all
-capabilities and never binds a privileged port.
+UDP/10001, and the health endpoint uses TCP/9199. The supplied Compose
+deployment drops all capabilities, and the process never binds a privileged
+port. The identity-free health server also limits aggregate accepted
+connections in addition to per-request timeouts.
 
 ## Outlet-topology projection
 

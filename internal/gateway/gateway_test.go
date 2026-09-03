@@ -207,6 +207,167 @@ func TestPersistedStateChangingGCMReplayIsRejectedAfterRestart(t *testing.T) {
 	}
 }
 
+func TestGCMCadenceReplayAfterRestartIsInert(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	seedManagedGCMState(t, configuration, testControllerKey, "1")
+	nonce := [16]byte{0xca, 0xde, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}
+	wire := encodeGCMControllerResponse(t, testControllerKey, nonce, []byte(`{"_type":"noop","interval":5}`))
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		return append([]byte(nil), wire...), nil
+	}}
+
+	saveCalls := 0
+	first := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+		saveCalls++
+		return nil
+	})
+	outcome, err := first.InformOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Interval != 0 || saveCalls != 0 {
+		t.Fatalf("effectful cadence escaped local policy: interval=%s saves=%d", outcome.Interval, saveCalls)
+	}
+
+	restarted := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+		saveCalls++
+		return nil
+	})
+	replayed, err := restarted.InformOnce(context.Background())
+	if err != nil {
+		t.Fatalf("inert replay need not fail the exchange: %v", err)
+	}
+	if replayed.Interval != 0 || saveCalls != 0 {
+		t.Fatalf("replayed cadence regained authority: interval=%s saves=%d", replayed.Interval, saveCalls)
+	}
+}
+
+func TestAdoptedCBCOverHTTPIsAcknowledgementOnly(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	const nextKey = "ffeeddccbbaa99887766554433221100"
+	tests := []struct {
+		name            string
+		payload         string
+		wantCycles      int
+		wantUnsupported int
+	}{
+		{name: "cadence", payload: `{"_type":"noop","interval":5}`},
+		{name: "state and key", payload: `{"_type":"setparam","mgmt_cfg":"cfgversion=2\nauthkey=` + nextKey + `\n"}`},
+		{name: "factory reset", payload: `{"_type":"setdefault"}`},
+		{name: "reboot", payload: `{"_type":"reboot"}`},
+		{name: "upgrade", payload: `{"_type":"upgrade","version":"9.9.9"}`},
+		{name: "relay observation", payload: `{"_type":"cmd","cmd":"relayctl","outlet_table":[{"index":1}]}`, wantCycles: 1},
+		{name: "unsupported settings observation", payload: `{"_type":"setparam","mgmt_cfg":"cfgversion=1\n","system_cfg":"beep.status=disabled\n"}`, wantUnsupported: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configuration := baseConfig(t)
+			seedManagedCBCState(t, configuration, testControllerKey, "1")
+			wire := encodeCBCControllerResponse(t, testControllerKey, []byte(test.payload))
+			controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+				return append([]byte(nil), wire...), nil
+			}}
+			saveCalls := 0
+			service := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+				saveCalls++
+				return nil
+			})
+			before := adoptionFromState(service.persistent)
+			outcome, err := service.InformOnce(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			after := adoptionFromState(service.persistent)
+			if after != before || saveCalls != 0 {
+				t.Fatalf("adopted CBC/HTTP changed state: before=%s after=%s saves=%d", before, after, saveCalls)
+			}
+			if outcome.Interval != 0 || outcome.StateChanged || outcome.InformURLChanged || outcome.RestartRequested || outcome.UpgradeVersion != "" {
+				t.Fatalf("adopted CBC/HTTP exposed an effect: %+v", outcome)
+			}
+			if len(outcome.CycleIntents) != test.wantCycles || len(outcome.UnsupportedSettings) != test.wantUnsupported {
+				t.Fatalf("read-only observations = cycles %d settings %d, want %d/%d", len(outcome.CycleIntents), len(outcome.UnsupportedSettings), test.wantCycles, test.wantUnsupported)
+			}
+		})
+	}
+}
+
+func TestCBCTrustBoundariesPreserveLegitimateTransitions(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	t.Run("adopted default-key state accepts no non-completing effect", func(t *testing.T) {
+		configuration := baseConfig(t)
+		seedManagedCBCState(t, configuration, inform.DefaultKey, "1")
+		wire := encodeCBCControllerResponse(t, inform.DefaultKey, []byte(`{"_type":"setdefault"}`))
+		controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) { return wire, nil }}
+		service := newReplayTestGateway(t, configuration, now, controller, nil)
+		if _, err := service.InformOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if !service.persistent.Adoption.Adopted || service.persistent.Adoption.AuthKey != inform.DefaultKey {
+			t.Fatalf("non-completing default-key response changed bootstrap state: %+v", service.persistent.Adoption)
+		}
+	})
+
+	t.Run("default-key bootstrap may complete after an initial noop", func(t *testing.T) {
+		configuration := baseConfig(t)
+		seedManagedCBCState(t, configuration, inform.DefaultKey, "1")
+		wire := encodeCBCControllerResponse(t, inform.DefaultKey, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\nauthkey=`+testControllerKey+`\nuse_aes_gcm=on\n"}`))
+		controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) { return wire, nil }}
+		service := newReplayTestGateway(t, configuration, now, controller, nil)
+		if _, err := service.InformOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if service.persistent.Adoption.AuthKey != testControllerKey || service.persistent.Adoption.CfgVersion != "2" || !service.persistent.Adoption.UseAESGCM {
+			t.Fatalf("bootstrap transition was not preserved: %+v", service.persistent.Adoption)
+		}
+	})
+
+	t.Run("HTTPS authenticates adopted CBC effects", func(t *testing.T) {
+		configuration := baseConfig(t)
+		configuration.UniFi.InformURL = "https://192.0.2.10:8443/inform"
+		seedManagedCBCState(t, configuration, testControllerKey, "1")
+		wire := encodeCBCControllerResponse(t, testControllerKey, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\n"}`))
+		controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) { return wire, nil }}
+		service := newReplayTestGateway(t, configuration, now, controller, nil)
+		if _, err := service.InformOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if service.persistent.Adoption.CfgVersion != "2" {
+			t.Fatalf("HTTPS/CBC state change was suppressed: %+v", service.persistent.Adoption)
+		}
+	})
+
+	t.Run("same-key CBC may upgrade one way to GCM", func(t *testing.T) {
+		configuration := baseConfig(t)
+		seedManagedCBCState(t, configuration, testControllerKey, "1")
+		wire := encodeCBCControllerResponse(t, testControllerKey, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\nuse_aes_gcm=on\n"}`))
+		controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) { return wire, nil }}
+		service := newReplayTestGateway(t, configuration, now, controller, nil)
+		outcome, err := service.InformOnce(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !service.persistent.Adoption.UseAESGCM || service.persistent.Adoption.CfgVersion != "1" || !outcome.StateChanged {
+			t.Fatalf("confined GCM upgrade mismatch: state=%+v outcome=%+v", service.persistent.Adoption, outcome)
+		}
+	})
+
+	t.Run("key-changing unauthenticated upgrade is suppressed", func(t *testing.T) {
+		configuration := baseConfig(t)
+		seedManagedCBCState(t, configuration, testControllerKey, "1")
+		const nextKey = "ffeeddccbbaa99887766554433221100"
+		wire := encodeCBCControllerResponse(t, testControllerKey, []byte(`{"_type":"setparam","mgmt_cfg":"authkey=`+nextKey+`\nuse_aes_gcm=on\n"}`))
+		controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) { return wire, nil }}
+		service := newReplayTestGateway(t, configuration, now, controller, nil)
+		if _, err := service.InformOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if service.persistent.Adoption.AuthKey != testControllerKey || service.persistent.Adoption.UseAESGCM {
+			t.Fatalf("unauthenticated key change escaped confinement: %+v", service.persistent.Adoption)
+		}
+	})
+}
+
 func TestGCMReplayEpochResetsAfterAuthKeyChange(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	configuration := baseConfig(t)
@@ -686,25 +847,7 @@ func TestUnprovenControllerWritesNeverReachNUT(t *testing.T) {
 	}
 }
 
-func TestControllerCannotExtendLocalInformInterval(t *testing.T) {
-	tests := []struct {
-		name      string
-		requested time.Duration
-		maximum   time.Duration
-		want      time.Duration
-	}{
-		{name: "zero remains unchanged signal", maximum: 10 * time.Second},
-		{name: "shorter controller interval", requested: 4 * time.Second, maximum: 10 * time.Second, want: 4 * time.Second},
-		{name: "longer controller interval is capped", requested: 24 * time.Hour, maximum: 10 * time.Second, want: 10 * time.Second},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := cappedInformInterval(test.requested, test.maximum); got != test.want {
-				t.Fatalf("interval = %s, want %s", got, test.want)
-			}
-		})
-	}
-
+func TestControllerCannotChangeLocalInformInterval(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	configuration := baseConfig(t)
 	service, err := New(context.Background(), configuration, Options{
@@ -723,8 +866,8 @@ func TestControllerCannotExtendLocalInformInterval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.Interval != configuration.UniFi.InformInterval {
-		t.Fatalf("gateway interval = %s, want local maximum %s", outcome.Interval, configuration.UniFi.InformInterval)
+	if outcome.Interval != 0 {
+		t.Fatalf("gateway exposed controller cadence %s, want local policy", outcome.Interval)
 	}
 }
 
@@ -787,14 +930,41 @@ func baseConfig(t *testing.T) config.Config {
 }
 
 type functionalController struct {
-	exchange func(context.Context, string, []byte) ([]byte, error)
+	exchange  func(context.Context, string, []byte) ([]byte, error)
+	authorize func(context.Context, string, string) error
 }
 
 func (c *functionalController) Exchange(ctx context.Context, endpoint string, request []byte) ([]byte, error) {
 	return c.exchange(ctx, endpoint, request)
 }
 
-func (*functionalController) AuthorizeTransition(context.Context, string, string) error { return nil }
+func (c *functionalController) AuthorizeTransition(ctx context.Context, current, next string) error {
+	if c.authorize != nil {
+		return c.authorize(ctx, current, next)
+	}
+	return nil
+}
+
+func seedManagedCBCState(t *testing.T, configuration config.Config, key, cfgVersion string) {
+	t.Helper()
+	persistent, err := state.LoadOrCreate(
+		configuration.Runtime.StateFile,
+		configuration.Device.MAC,
+		configuration.Device.Serial,
+		configuration.UniFi.InformURL,
+		inform.DefaultKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistent.Adoption = state.Adoption{
+		AuthKey: key, InformURL: configuration.UniFi.InformURL, CfgVersion: cfgVersion,
+		Adopted: true,
+	}
+	if err := state.Save(configuration.Runtime.StateFile, persistent); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func seedManagedGCMState(t *testing.T, configuration config.Config, key, cfgVersion string) {
 	t.Helper()
@@ -863,6 +1033,19 @@ func encodeGCMControllerResponse(t *testing.T, keyHex string, nonce [16]byte, pa
 	binary.BigEndian.PutUint32(header[32:36], inform.PayloadVersion)
 	binary.BigEndian.PutUint32(header[36:40], uint32(len(payload)+aead.Overhead()))
 	return append(header, aead.Seal(nil, nonce[:], payload, header)...)
+}
+
+func encodeCBCControllerResponse(t *testing.T, keyHex string, payload []byte) []byte {
+	t.Helper()
+	encoder, err := inform.NewEncoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := encoder.Encode(inform.Packet{MAC: gatewayTestMAC, Payload: payload}, keyHex, inform.ModeCBC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
 }
 
 type sequencePoller struct {

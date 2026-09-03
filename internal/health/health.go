@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const maxHealthHeaderBytes = 16 << 10
+const (
+	maxHealthHeaderBytes = 16 << 10
+	maxHealthConnections = 32
+)
 
 type Monitor struct {
 	mu         sync.RWMutex
@@ -161,6 +164,73 @@ func Server(address string, handler http.Handler) *http.Server {
 			return context.Background()
 		},
 	}
+}
+
+// LimitConnections bounds aggregate health-listener socket and goroutine
+// consumption. Capacity is acquired before Accept so net/http can never own
+// more than maxHealthConnections live connections. Closing the listener also
+// wakes an Accept blocked on capacity.
+func LimitConnections(listener net.Listener) net.Listener {
+	return limitConnections(listener, maxHealthConnections)
+}
+
+type limitedListener struct {
+	net.Listener
+	slots     chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func limitConnections(listener net.Listener, maximum int) *limitedListener {
+	if maximum < 1 {
+		panic("health: connection limit must be positive")
+	}
+	return &limitedListener{
+		Listener: listener,
+		slots:    make(chan struct{}, maximum),
+		done:     make(chan struct{}),
+	}
+}
+
+func (l *limitedListener) Accept() (net.Conn, error) {
+	select {
+	case l.slots <- struct{}{}:
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+
+	connection, err := l.Listener.Accept()
+	if err != nil {
+		<-l.slots
+		return nil, err
+	}
+	return &limitedConnection{
+		Conn: connection,
+		release: func() {
+			<-l.slots
+		},
+	}, nil
+}
+
+func (l *limitedListener) Close() error {
+	l.closeOnce.Do(func() {
+		close(l.done)
+		l.closeErr = l.Listener.Close()
+	})
+	return l.closeErr
+}
+
+type limitedConnection struct {
+	net.Conn
+	releaseOnce sync.Once
+	release     func()
+}
+
+func (c *limitedConnection) Close() error {
+	err := c.Conn.Close()
+	c.releaseOnce.Do(c.release)
+	return err
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

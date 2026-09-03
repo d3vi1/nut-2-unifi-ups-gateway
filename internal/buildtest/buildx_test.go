@@ -11,6 +11,7 @@ const (
 	pinnedBuildxVersion  = "v0.37.0"
 	pinnedBuildxSHA256   = "ae43fa08c796b44efc86d7a63c55f73f7c35f3101188dea7bf93bcd6f99577ba"
 	pinnedBuildKitImage  = "moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3"
+	pinnedSBOMGenerator  = "docker.io/docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9"
 	localBuildxAction    = "uses: ./.github/actions/setup-pinned-buildx"
 	remoteBuildxAction   = "docker/setup-buildx-action@"
 	buildxBuilderBinding = "builder: ${{ steps.buildx.outputs.builder }}"
@@ -55,6 +56,36 @@ func TestBuildxAndBuildKitAreImmutable(t *testing.T) {
 			t.Errorf("local Buildx action executes %q out of the reviewed order", marker)
 		}
 		previous = position
+	}
+}
+
+func TestPublishingBuildIsCacheColdAndPinsItsSBOMGenerator(t *testing.T) {
+	release := readRepositoryFile(t, ".github", "workflows", "release.yml")
+	start := strings.Index(release, "      - name: Build and push image with SBOM and provenance\n")
+	end := strings.Index(release, "\n  publish-release:\n")
+	if start < 0 || end <= start {
+		t.Fatal("cannot isolate the publishing build step")
+	}
+	publishBuild := release[start:end]
+
+	for name, want := range map[string]string{
+		"push output":           "          push: true\n",
+		"cold build":            "          no-cache: true\n",
+		"attestation block":     "          attests: |\n",
+		"pinned SBOM generator": "type=sbom,generator=" + pinnedSBOMGenerator,
+	} {
+		if got := strings.Count(publishBuild, want); got != 1 {
+			t.Errorf("publishing build contains %d %s markers %q; want 1", got, name, want)
+		}
+	}
+	for name, forbidden := range map[string]string{
+		"remote cache import":     "cache-from:",
+		"cache export":            "cache-to:",
+		"dedicated SBOM override": "\n          sbom:",
+	} {
+		if strings.Contains(publishBuild, forbidden) {
+			t.Errorf("publishing build contains forbidden %s %q", name, forbidden)
+		}
 	}
 }
 

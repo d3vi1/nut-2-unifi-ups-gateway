@@ -52,6 +52,12 @@ The initial envelope key is a public protocol constant. Adoption through
 decoded with the current key/mode and changes apply to the next request. GCM is
 sticky until `setdefault`; a later `setparam` may rotate the key.
 
+The gateway deliberately narrows those firmware semantics at its trust
+boundary. Controller cadence never changes the local scheduler. After a
+controller key is installed, CBC over plain HTTP is acknowledgement-only apart
+from a same-key one-way upgrade to authenticated GCM; effectful CBC remains
+available only over trusted HTTPS.
+
 ## Genuine firmware protocol inventory
 
 | Direction | Endpoint | Purpose | Evidence | Gateway v1 |

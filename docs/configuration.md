@@ -32,7 +32,7 @@ network without transport encryption; it is not suitable for an untrusted LAN.
 | `N2U_UNIFI_MODEL` | `USWDA26` | Controller-recognized UPS carrier: `USWDA26` or `USPDA2C` |
 | `N2U_UNIFI_VERSION` | `1.6.1` | `1.6.1` or the exact selected build (`1.6.1.413`/`1.6.1.4933`) |
 | `N2U_INFORM_URL` | `http://unifi:8080/inform` | HTTP(S), `/inform`, no credentials/query/fragment |
-| `N2U_INFORM_INTERVAL` | `10s` | 1 second–10 minutes; local maximum even if the controller asks for longer |
+| `N2U_INFORM_INTERVAL` | `10s` | 1 second–10 minutes; sole runtime inform cadence |
 | `N2U_INFORM_TIMEOUT` | `10s` | 1 second–1 minute |
 | `N2U_DISCOVERY_INTERVAL` | `30s` | 5 seconds–10 minutes |
 | `N2U_UNIFI_NUT_SERVER_ENABLED` | `false` | Explicit experimental advertisement only |
@@ -46,8 +46,17 @@ network without transport encryption; it is not suitable for an untrusted LAN.
 Set the final controller origin before first startup. Adoption may update the
 path/configuration at that exact origin, but hostname, address, scheme, and port
 changes are rejected rather than accepted through a DNS-equivalence check.
-Positive controller intervals shorter than `N2U_INFORM_INTERVAL` are honored;
-longer values are capped at this operator-controlled maximum.
+Controller-provided intervals are parsed for protocol compatibility but never
+change the runtime scheduler. `N2U_INFORM_INTERVAL` is the sole cadence source,
+which makes captured cadence replies inert across process restarts without
+rewriting the state volume on every ordinary inform.
+
+Initial adoption uses firmware-compatible CBC and a public bootstrap key, so it
+must occur on a trusted management LAN. Once a controller key is installed,
+plain-HTTP CBC replies are acknowledgement-only: configuration, reset, key,
+reboot, upgrade, and cadence effects are suppressed. A same-key one-way upgrade
+to GCM remains available. Full controller response effects require authenticated
+GCM or HTTPS with a certificate trusted by the container.
 
 ### Optional NUT Server advertisement
 
@@ -90,6 +99,11 @@ takes precedence and configuration no longer overwrites it.
 | `N2U_STATE_FILE` | `/var/lib/n2u/state.json` |
 | `N2U_HEALTH_ADDRESS` | `127.0.0.1:9199` |
 | `N2U_LOG_LEVEL` | `info` |
+
+Health handlers contain no device identity, retain strict request timeouts and
+header bounds, and share a fixed aggregate connection limit. Loopback remains
+the safe default; expose this endpoint remotely only behind trusted network
+policy.
 
 ## Outlet topology and control
 

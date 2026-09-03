@@ -75,7 +75,11 @@ The Buildx version and binary checksum and the BuildKit image digest in
 `.github/actions/setup-pinned-buildx/action.yml` form one reviewed toolchain
 unit. Update and verify all three together, then update the exact regression
 constants in `internal/buildtest/buildx_test.go`; never substitute a moving tag
-or a checksum downloaded at workflow runtime.
+or a checksum downloaded at workflow runtime. The release SBOM generator is a
+fourth content-addressed toolchain input enforced in the same test. Every
+`push: true` build must remain explicitly cache-cold and must not import or
+export a remote build cache; CI-only non-publishing builds may use their
+separate cache.
 
 ## Classify evidence
 

@@ -228,9 +228,10 @@ packet captures, credentials, MAC addresses, or serial numbers in an issue.
 
 ## Container and platforms
 
-The release image is a static Go binary in `scratch`, runs as UID/GID
-`65532:65532`, drops every Linux capability, and uses a read-only root
-filesystem. GHCR publishes:
+The release image is a static Go binary in `scratch` and declares UID/GID
+`65532:65532`. The supplied Compose deployment also drops every Linux
+capability and makes the root filesystem read-only, with one private writable
+state volume. GHCR publishes:
 
 - `linux/amd64` (x86_64)
 - `linux/arm64` (AArch64)

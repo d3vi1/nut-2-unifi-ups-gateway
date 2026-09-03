@@ -45,19 +45,28 @@ administer. Coordinate any live power-path test with the operator.
 - Authenticated GCM response nonces are replay-checked within the active
   auth-key/mode epoch. Nonces that changed persistent adoption state are kept
   in a separate bounded window and saved atomically with that transition.
+- Controller-supplied inform intervals never control the runtime scheduler;
+  `N2U_INFORM_INTERVAL` remains the sole cadence source.
+- Adopted CBC replies over plain HTTP cannot change state or cadence after a
+  controller key is installed. Bootstrap completion and a same-key one-way GCM
+  upgrade remain compatible; authenticated GCM and trusted HTTPS retain full
+  response semantics.
+- The health listener has per-connection request bounds and a fixed aggregate
+  connection cap. Its supplied deployment remains loopback-only.
 - Inform redirects are rejected.
 - A controller response cannot change the configured inform origin; DNS aliases
   are not treated as equivalent.
 - Persistent adoption state is owner-readable only and atomically replaced.
-- The release container runs non-root, drops every capability, and is read-only
-  apart from its state volume.
+- The release image declares a non-root user; the supplied Compose deployment
+  drops every capability and is read-only apart from its private state volume.
 - Tagged releases provide an attested multi-platform OCI digest and a
   checksum-verified deployment bundle pinned to that digest. The supplied
   Compose file refuses to render without an explicit `N2U_IMAGE`.
 - Container workflows install an exact Buildx artifact only after verifying its
-  reviewed SHA-256 and bootstrap BuildKit from an OCI digest. GitHub's hosted
-  runner and its preinstalled operating-system tools remain the external build
-  platform trust root.
+  reviewed SHA-256 and bootstrap BuildKit from an OCI digest. Publishing builds
+  are explicitly cache-cold and the SBOM generator is pinned by OCI digest.
+  GitHub's hosted runner and its preinstalled operating-system tools remain the
+  external build platform trust root.
 - Secrets are accepted through files; the example deployment does not place a
   NUT password in Compose or `.env`.
 
@@ -85,6 +94,13 @@ can forge a response or choose the next key. Perform first adoption only on a
 trusted management network, configure the exact controller origin before
 startup, and inspect the resulting device identity. HTTPS helps only when the
 controller certificate chains to a CA trusted by the container.
+
+After the public-key bootstrap, an adopted session that still uses CBC over
+plain HTTP is treated as an acknowledgement channel, not an authorization
+channel. Its response is parsed and may retain read-only ignored-command
+observations, but state, reset, key, reboot, upgrade, and cadence effects are
+discarded. The only exception is a same-key transition to authenticated GCM.
+Controllers that require effectful post-adoption CBC must use trusted HTTPS.
 
 The software is provided under the warranty disclaimer in
 [GPL-2.0-only](LICENSE).

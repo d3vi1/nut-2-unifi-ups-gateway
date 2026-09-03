@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -424,7 +425,11 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	if err != nil {
 		return inform.Outcome{}, err
 	}
-	outcome.Interval = cappedInformInterval(outcome.Interval, g.configuration.UniFi.InformInterval)
+	confineAdoptedCBCResponse(currentAdoption, &nextAdoption, &outcome, mode)
+	// Controller-selected cadence has no durable freshness binding that avoids a
+	// state-file write for every ordinary noop. Keep the operator's local interval
+	// authoritative so captured cadence responses are inert across restarts.
+	outcome.Interval = 0
 	if outcome.Kind == inform.ResponseRelayControl && len(outcome.CycleIntents) != 0 {
 		// UPS26 firmware parses relayctl rows but uses only the first row's
 		// delays for a global UPS cycle; index and relay_group are not a proven
@@ -511,13 +516,14 @@ func (g *Gateway) Run(ctx context.Context) error {
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	server := health.Server(g.configuration.Runtime.HealthAddress, g.monitor.Handler())
+	limitedHealthListener := health.LimitConnections(healthListener)
 	fatal := make(chan error, 2)
 	var workers sync.WaitGroup
 	initialPollDone := make(chan struct{})
 	workers.Add(4)
 	go func() {
 		defer workers.Done()
-		if err := server.Serve(healthListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(limitedHealthListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			select {
 			case fatal <- errors.New("health server failed"):
 			default:
@@ -549,6 +555,9 @@ func (g *Gateway) Run(ctx context.Context) error {
 	if err := server.Shutdown(shutdownContext); err != nil && result == nil {
 		result = errors.New("health server shutdown failed")
 	}
+	// Shutdown can race a Serve goroutine that has not registered its listener
+	// yet. The idempotent close also releases that startup edge before Wait.
+	_ = limitedHealthListener.Close()
 	workers.Wait()
 	return result
 }
@@ -579,11 +588,8 @@ func (g *Gateway) informLoop(ctx context.Context, initialPollDone <-chan struct{
 	case <-initialPollDone:
 	}
 	informInterval := g.configuration.UniFi.InformInterval
-	outcome, err := g.InformOnce(ctx)
-	if err != nil {
+	if _, err := g.InformOnce(ctx); err != nil {
 		g.logInformFailure(err)
-	} else if outcome.Interval > 0 {
-		informInterval = outcome.Interval
 	}
 	informTimer := time.NewTimer(informInterval)
 	defer informTimer.Stop()
@@ -592,11 +598,8 @@ func (g *Gateway) informLoop(ctx context.Context, initialPollDone <-chan struct{
 		case <-ctx.Done():
 			return
 		case <-informTimer.C:
-			outcome, err := g.InformOnce(ctx)
-			if err != nil {
+			if _, err := g.InformOnce(ctx); err != nil {
 				g.logInformFailure(err)
-			} else if outcome.Interval > 0 {
-				informInterval = outcome.Interval
 			}
 			informTimer.Reset(informInterval)
 		}
@@ -732,12 +735,37 @@ func adoptionToState(adoption inform.AdoptionState) state.Adoption {
 	}
 }
 
-// cappedInformInterval honors a controller's request only when it cannot
-// weaken the operator-selected local inform cadence. Zero remains the wire
-// signal to preserve the current negotiated cadence.
-func cappedInformInterval(requested, localMaximum time.Duration) time.Duration {
-	if requested > localMaximum {
-		return localMaximum
+// confineAdoptedCBCResponse retains compatibility for bootstrap, authenticated
+// GCM, and HTTPS while preventing unauthenticated adopted CBC responses from
+// changing state or cadence. A same-key one-way GCM upgrade is safe to retain:
+// once committed, the replayed CBC envelope no longer matches the active mode.
+func confineAdoptedCBCResponse(current inform.AdoptionState, next *inform.AdoptionState, outcome *inform.Outcome, mode inform.Mode) {
+	if mode != inform.ModeCBC || !current.Adopted {
+		return
 	}
-	return requested
+	endpoint, err := parseControllerURL(current.InformURL)
+	if err == nil && endpoint.Scheme == "https" {
+		return
+	}
+	// Some controllers answer the first inform with a noop and provide the
+	// controller key only in a later setparam. That default-key state is still
+	// bootstrap, so permit only the response that actually installs a new key.
+	if strings.EqualFold(current.AuthKey, inform.DefaultKey) && !strings.EqualFold(next.AuthKey, inform.DefaultKey) {
+		return
+	}
+
+	upgradeToGCM := next.UseAESGCM && !current.UseAESGCM && strings.EqualFold(next.AuthKey, current.AuthKey)
+	kind := outcome.Kind
+	cycleIntents := outcome.CycleIntents
+	unsupportedSettings := outcome.UnsupportedSettings
+	*next = current
+	*outcome = inform.Outcome{
+		Kind:                kind,
+		CycleIntents:        cycleIntents,
+		UnsupportedSettings: unsupportedSettings,
+	}
+	if upgradeToGCM {
+		next.UseAESGCM = true
+		outcome.StateChanged = true
+	}
 }
