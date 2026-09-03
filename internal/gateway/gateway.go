@@ -425,7 +425,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	if err != nil {
 		return inform.Outcome{}, err
 	}
-	confineAdoptedCBCResponse(currentAdoption, &nextAdoption, &outcome, mode)
+	confineAdoptedPlainHTTPResponse(currentAdoption, &nextAdoption, &outcome, mode)
 	// Controller-selected cadence has no durable freshness binding that avoids a
 	// state-file write for every ordinary noop. Keep the operator's local interval
 	// authoritative so captured cadence responses are inert across restarts.
@@ -735,12 +735,14 @@ func adoptionToState(adoption inform.AdoptionState) state.Adoption {
 	}
 }
 
-// confineAdoptedCBCResponse retains compatibility for bootstrap, authenticated
-// GCM, and HTTPS while preventing unauthenticated adopted CBC responses from
-// changing state or cadence. A same-key one-way GCM upgrade is safe to retain:
-// once committed, the replayed CBC envelope no longer matches the active mode.
-func confineAdoptedCBCResponse(current inform.AdoptionState, next *inform.AdoptionState, outcome *inform.Outcome, mode inform.Mode) {
-	if mode != inform.ModeCBC || !current.Adopted {
+// confineAdoptedPlainHTTPResponse retains the CBC bootstrap transitions needed
+// for adoption while preventing every other adopted response received over
+// plain HTTP from changing persistent state or requesting local effects. GCM
+// authenticates a response's contents but does not bind it to the current
+// request, so a captured or delayed response has only acknowledgement authority
+// without trusted transport. HTTPS retains full response semantics.
+func confineAdoptedPlainHTTPResponse(current inform.AdoptionState, next *inform.AdoptionState, outcome *inform.Outcome, mode inform.Mode) {
+	if !current.Adopted {
 		return
 	}
 	endpoint, err := parseControllerURL(current.InformURL)
@@ -750,11 +752,13 @@ func confineAdoptedCBCResponse(current inform.AdoptionState, next *inform.Adopti
 	// Some controllers answer the first inform with a noop and provide the
 	// controller key only in a later setparam. That default-key state is still
 	// bootstrap, so permit only the response that actually installs a new key.
-	if strings.EqualFold(current.AuthKey, inform.DefaultKey) && !strings.EqualFold(next.AuthKey, inform.DefaultKey) {
+	if mode == inform.ModeCBC && strings.EqualFold(current.AuthKey, inform.DefaultKey) && !strings.EqualFold(next.AuthKey, inform.DefaultKey) {
 		return
 	}
 
-	upgradeToGCM := next.UseAESGCM && !current.UseAESGCM && strings.EqualFold(next.AuthKey, current.AuthKey)
+	// A same-key one-way GCM upgrade is safe to retain: once committed, the
+	// replayed CBC envelope no longer matches the active mode.
+	upgradeToGCM := mode == inform.ModeCBC && next.UseAESGCM && !current.UseAESGCM && strings.EqualFold(next.AuthKey, current.AuthKey)
 	kind := outcome.Kind
 	cycleIntents := outcome.CycleIntents
 	unsupportedSettings := outcome.UnsupportedSettings

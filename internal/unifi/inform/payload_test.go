@@ -373,7 +373,7 @@ func TestObservedNUTTopologyUsesKnownCarrierWithoutImpersonatingItsOutletLayout(
 		{
 			Index:        1,
 			Name:         "USB-C management",
-			Capabilities: pointer(OutletCapabilityUSB | OutletCapabilityHasRelay),
+			Capabilities: pointer(OutletCapabilityUSB),
 			RelayGroup:   1,
 			RelayState:   pointer(true),
 		},
@@ -391,7 +391,7 @@ func TestObservedNUTTopologyUsesKnownCarrierWithoutImpersonatingItsOutletLayout(
 		{
 			Index:        3,
 			Name:         "Independent AC",
-			Capabilities: pointer(OutletCapabilityAC | OutletCapabilityHasRelay | OutletCapabilityPowerMeter),
+			Capabilities: pointer(OutletCapabilityAC | OutletCapabilityPowerMeter),
 			RelayGroup:   2,
 			RelayState:   pointer(false),
 			CurrentA:     pointer(0.25),
@@ -417,7 +417,7 @@ func TestObservedNUTTopologyUsesKnownCarrierWithoutImpersonatingItsOutletLayout(
 	first := outlets[0].(map[string]any)
 	second := outlets[1].(map[string]any)
 	third := outlets[2].(map[string]any)
-	if first["index"] != float64(1) || first["relay_group"] != float64(1) || first["outlet_caps"] != float64(OutletCapabilityUSB|OutletCapabilityHasRelay) {
+	if first["index"] != float64(1) || first["relay_group"] != float64(1) || first["outlet_caps"] != float64(OutletCapabilityUSB) {
 		t.Fatalf("first observed outlet was rewritten: %+v", first)
 	}
 	if second["index"] != float64(2) || second["relay_group"] != float64(1) || second["outlet_caps"] != float64(OutletCapabilityAC|OutletCapabilityPowerMeter) {
@@ -426,7 +426,7 @@ func TestObservedNUTTopologyUsesKnownCarrierWithoutImpersonatingItsOutletLayout(
 	if second["outlet_voltage"] != 230.4 || second["outlet_current"] != 1.37 || second["outlet_power"] != float64(242) || second["outlet_power_factor"] != 0.77 {
 		t.Fatalf("observed AC measurements were not preserved: %+v", second)
 	}
-	if third["index"] != float64(3) || third["relay_group"] != float64(2) || third["outlet_caps"] != float64(OutletCapabilityAC|OutletCapabilityHasRelay|OutletCapabilityPowerMeter) {
+	if third["index"] != float64(3) || third["relay_group"] != float64(2) || third["outlet_caps"] != float64(OutletCapabilityAC|OutletCapabilityPowerMeter) {
 		t.Fatalf("third observed outlet was rewritten: %+v", third)
 	}
 	for index, outlet := range []map[string]any{first, second, third} {
@@ -511,10 +511,14 @@ func TestObservedNUTTopologyRejectsUnsafeOrAmbiguousOutletShape(t *testing.T) {
 			},
 		},
 		{
-			name: "conflicting relay states in one group",
+			name: "writable relay capability",
 			mutate: func(report *PowerDeviceReport) {
 				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityHasRelay)
-				report.Outlets[1].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityHasRelay)
+			},
+		},
+		{
+			name: "conflicting relay states in one group",
+			mutate: func(report *PowerDeviceReport) {
 				report.Outlets[0].RelayGroup = 1
 				report.Outlets[1].RelayGroup = 1
 				report.Outlets[0].RelayState = pointer(true)
@@ -524,8 +528,6 @@ func TestObservedNUTTopologyRejectsUnsafeOrAmbiguousOutletShape(t *testing.T) {
 		{
 			name: "partial relay state in one group",
 			mutate: func(report *PowerDeviceReport) {
-				report.Outlets[0].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityHasRelay)
-				report.Outlets[1].Capabilities = pointer(OutletCapabilityAC | OutletCapabilityHasRelay)
 				report.Outlets[0].RelayGroup = 1
 				report.Outlets[1].RelayGroup = 1
 				report.Outlets[0].RelayState = pointer(true)
@@ -555,7 +557,7 @@ func TestObservedNUTTopologyRejectsUnsafeOrAmbiguousOutletShape(t *testing.T) {
 		{
 			name: "missing projected physical type",
 			mutate: func(report *PowerDeviceReport) {
-				report.Outlets[0].Capabilities = pointer(OutletCapabilityHasRelay)
+				report.Outlets[0].Capabilities = pointer(0)
 			},
 		},
 		{

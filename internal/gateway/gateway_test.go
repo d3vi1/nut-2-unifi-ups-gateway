@@ -177,6 +177,7 @@ func TestGCMReplayIsRejectedInSameProcessWithoutLeakingMaterial(t *testing.T) {
 func TestPersistedStateChangingGCMReplayIsRejectedAfterRestart(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	configuration := baseConfig(t)
+	configuration.UniFi.InformURL = "https://192.0.2.10:8443/inform"
 	seedManagedGCMState(t, configuration, testControllerKey, "1")
 	nonce := [16]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 	wire := encodeGCMControllerResponse(t, testControllerKey, nonce, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\n"}`))
@@ -240,6 +241,156 @@ func TestGCMCadenceReplayAfterRestartIsInert(t *testing.T) {
 	}
 	if replayed.Interval != 0 || saveCalls != 0 {
 		t.Fatalf("replayed cadence regained authority: interval=%s saves=%d", replayed.Interval, saveCalls)
+	}
+}
+
+func TestAdoptedGCMOverHTTPIsAcknowledgementOnly(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	const nextKey = "ffeeddccbbaa99887766554433221100"
+	tests := []struct {
+		name            string
+		payload         string
+		wantCycles      int
+		wantUnsupported int
+	}{
+		{name: "cadence", payload: `{"_type":"noop","interval":5}`},
+		{name: "state key and endpoint", payload: `{"_type":"setparam","mgmt_cfg":"cfgversion=2\nauthkey=` + nextKey + `\ninform_url=http://192.0.2.99:8080/inform\n"}`},
+		{name: "factory reset", payload: `{"_type":"setdefault"}`},
+		{name: "reboot", payload: `{"_type":"reboot"}`},
+		{name: "upgrade", payload: `{"_type":"upgrade","version":"9.9.9"}`},
+		{name: "relay observation", payload: `{"_type":"cmd","cmd":"relayctl","outlet_table":[{"index":1}]}`, wantCycles: 1},
+		{name: "unsupported settings observation", payload: `{"_type":"setparam","mgmt_cfg":"cfgversion=1\n","system_cfg":"beep.status=disabled\n"}`, wantUnsupported: 1},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configuration := baseConfig(t)
+			seedManagedGCMState(t, configuration, testControllerKey, "1")
+			nonce := [16]byte{0xa1, byte(index + 1)}
+			wire := encodeGCMControllerResponse(t, testControllerKey, nonce, []byte(test.payload))
+			authorizeCalls := 0
+			controller := &functionalController{
+				exchange: func(context.Context, string, []byte) ([]byte, error) {
+					return append([]byte(nil), wire...), nil
+				},
+				authorize: func(context.Context, string, string) error {
+					authorizeCalls++
+					return nil
+				},
+			}
+			saveCalls := 0
+			service := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+				saveCalls++
+				return nil
+			})
+			before := adoptionFromState(service.persistent)
+			outcome, err := service.InformOnce(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			after := adoptionFromState(service.persistent)
+			if after != before || saveCalls != 0 || authorizeCalls != 0 {
+				t.Fatalf("adopted GCM/HTTP changed state: before=%+v after=%+v saves=%d authorizations=%d", before, after, saveCalls, authorizeCalls)
+			}
+			if outcome.Interval != 0 || outcome.StateChanged || outcome.InformURLChanged || outcome.RestartRequested || outcome.UpgradeVersion != "" {
+				t.Fatalf("adopted GCM/HTTP exposed an effect: %+v", outcome)
+			}
+			if len(outcome.CycleIntents) != test.wantCycles || len(outcome.UnsupportedSettings) != test.wantUnsupported {
+				t.Fatalf("read-only observations = cycles %d settings %d, want %d/%d", len(outcome.CycleIntents), len(outcome.UnsupportedSettings), test.wantCycles, test.wantUnsupported)
+			}
+		})
+	}
+}
+
+func TestPlainHTTPGCMReplayCannotRegainStateAuthorityAfterRestart(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	seedManagedGCMState(t, configuration, testControllerKey, "1")
+
+	staleNonce := [16]byte{0xd1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	freshNonce := [16]byte{0xd2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	staleWire := encodeGCMControllerResponse(t, testControllerKey, staleNonce, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=1\n"}`))
+	freshWire := encodeGCMControllerResponse(t, testControllerKey, freshNonce, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\n"}`))
+	responses := [][]byte{staleWire, freshWire}
+	call := 0
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		wire := responses[call]
+		call++
+		return append([]byte(nil), wire...), nil
+	}}
+	saveCalls := 0
+	first := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+		saveCalls++
+		return nil
+	})
+	for _, wantKind := range []inform.ResponseKind{inform.ResponseSetParam, inform.ResponseSetParam} {
+		outcome, err := first.InformOnce(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.Kind != wantKind || outcome.StateChanged {
+			t.Fatalf("plain-HTTP GCM response retained state authority: %+v", outcome)
+		}
+	}
+	if first.persistent.Adoption.CfgVersion != "1" || saveCalls != 0 {
+		t.Fatalf("plain-HTTP GCM responses changed cfgversion: cfg=%q saves=%d", first.persistent.Adoption.CfgVersion, saveCalls)
+	}
+
+	// Model a later state transition from a trusted source. The original
+	// idempotent response nonce was never persisted, so a restart accepts its
+	// envelope but must still keep the newer state intact.
+	persisted, err := state.LoadOrCreate(
+		configuration.Runtime.StateFile,
+		configuration.Device.MAC,
+		configuration.Device.Serial,
+		configuration.UniFi.InformURL,
+		inform.DefaultKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted.Adoption.CfgVersion = "2"
+	if err := state.Save(configuration.Runtime.StateFile, persisted); err != nil {
+		t.Fatal(err)
+	}
+
+	replayController := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		return append([]byte(nil), staleWire...), nil
+	}}
+	restartSaveCalls := 0
+	restarted := newReplayTestGateway(t, configuration, now, replayController, func(string, state.State) error {
+		restartSaveCalls++
+		return nil
+	})
+	replayed, err := restarted.InformOnce(context.Background())
+	if err != nil {
+		t.Fatalf("freshly accepted stale envelope failed: %v", err)
+	}
+	if replayed.StateChanged || restarted.persistent.Adoption.CfgVersion != "2" || restartSaveCalls != 0 {
+		t.Fatalf("stale envelope regained authority after restart: outcome=%+v cfg=%q saves=%d", replayed, restarted.persistent.Adoption.CfgVersion, restartSaveCalls)
+	}
+}
+
+func TestHTTPSGCMResponseRetainsFullEffects(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	configuration.UniFi.InformURL = "https://192.0.2.10:8443/inform"
+	seedManagedGCMState(t, configuration, testControllerKey, "1")
+	nonce := [16]byte{0xe1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	wire := encodeGCMControllerResponse(t, testControllerKey, nonce, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\n"}`))
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		return append([]byte(nil), wire...), nil
+	}}
+	saveCalls := 0
+	service := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+		saveCalls++
+		return nil
+	})
+	outcome, err := service.InformOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.StateChanged || service.persistent.Adoption.CfgVersion != "2" || saveCalls != 1 {
+		t.Fatalf("HTTPS/GCM state change was suppressed: outcome=%+v state=%+v saves=%d", outcome, service.persistent.Adoption, saveCalls)
 	}
 }
 
@@ -371,6 +522,7 @@ func TestCBCTrustBoundariesPreserveLegitimateTransitions(t *testing.T) {
 func TestGCMReplayEpochResetsAfterAuthKeyChange(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	configuration := baseConfig(t)
+	configuration.UniFi.InformURL = "https://192.0.2.10:8443/inform"
 	seedManagedGCMState(t, configuration, testControllerKey, "1")
 	const nextKey = "ffeeddccbbaa99887766554433221100"
 	nonce := [16]byte{0x42, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
@@ -435,6 +587,7 @@ func TestGCMReplayWindowResetsAfterModeChange(t *testing.T) {
 func TestFreshGCMNoopsDoNotWriteStateAndPersistedWindowIsBounded(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	configuration := baseConfig(t)
+	configuration.UniFi.InformURL = "https://192.0.2.10:8443/inform"
 	seedManagedGCMState(t, configuration, testControllerKey, "1")
 	encoder, err := inform.NewEncoder()
 	if err != nil {
@@ -494,6 +647,7 @@ func TestFreshGCMNoopsDoNotWriteStateAndPersistedWindowIsBounded(t *testing.T) {
 func TestFreshNoopsCannotEvictStateChangingReplayProtection(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	configuration := baseConfig(t)
+	configuration.UniFi.InformURL = "https://192.0.2.10:8443/inform"
 	seedManagedGCMState(t, configuration, testControllerKey, "1")
 	stateChangingNonce := [16]byte{0xa5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
 	stateChangingWire := encodeGCMControllerResponse(t, testControllerKey, stateChangingNonce, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\n"}`))

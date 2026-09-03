@@ -70,14 +70,14 @@ func TestObservedNUTTopologyProjectsCapabilitiesGroupsAndMeasurements(t *testing
 	second := outlets[1].(map[string]any)
 	third := outlets[2].(map[string]any)
 
-	if first["index"] != float64(1) || first["relay_group"] != float64(1) || first["outlet_caps"] != float64(0x20001) {
-		t.Fatalf("switchable USB projection = %+v, want index=1 group=1 caps=0x20001", first)
+	if first["index"] != float64(1) || first["relay_group"] != float64(1) || first["outlet_caps"] != float64(0x20000) {
+		t.Fatalf("switchable USB projection = %+v, want index=1 group=1 caps=0x20000", first)
 	}
 	if second["index"] != float64(2) || second["relay_group"] != float64(1) || second["outlet_caps"] != float64(0x10002) {
 		t.Fatalf("metered AC projection = %+v, want index=2 group=1 caps=0x10002", second)
 	}
-	if third["index"] != float64(3) || third["relay_group"] != float64(2) || third["outlet_caps"] != float64(0x10001) {
-		t.Fatalf("switchable AC projection = %+v, want index=3 group=2 caps=0x10001", third)
+	if third["index"] != float64(3) || third["relay_group"] != float64(2) || third["outlet_caps"] != float64(0x10000) {
+		t.Fatalf("switchable AC projection = %+v, want index=3 group=2 caps=0x10000", third)
 	}
 	if first["relay_state"] != true || second["relay_state"] != true || third["relay_state"] != false {
 		t.Fatalf("group relay states were not projected consistently: first=%v second=%v third=%v", first["relay_state"], second["relay_state"], third["relay_state"])

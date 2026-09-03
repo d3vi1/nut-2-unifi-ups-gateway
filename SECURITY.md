@@ -38,6 +38,8 @@ administer. Coordinate any live power-path test with the operator.
 
 - The gateway has no NUT write-command API.
 - Firmware `relayctl` requests are decoded but never executed or translated.
+- NUT switchability remains descriptive; observed topology never advertises the
+  writable UniFi `HAS_RELAY` capability.
 - Writable AC-recovery-cycle, buzzer, and EPO capabilities are not advertised.
 - NUT information access is advertised only by an explicit operator opt-in and
   never includes credentials; the gateway itself opens no NUT listener.
@@ -47,12 +49,13 @@ administer. Coordinate any live power-path test with the operator.
   in a separate bounded window and saved atomically with that transition.
 - Controller-supplied inform intervals never control the runtime scheduler;
   `N2U_INFORM_INTERVAL` remains the sole cadence source.
-- Adopted CBC replies over plain HTTP cannot change state or cadence after a
-  controller key is installed. Bootstrap completion and a same-key one-way GCM
-  upgrade remain compatible; authenticated GCM and trusted HTTPS retain full
-  response semantics.
-- The health listener has per-connection request bounds and a fixed aggregate
-  connection cap. Its supplied deployment remains loopback-only.
+- Adopted replies over plain HTTP cannot change state or cadence after a
+  controller key is installed, whether TNBU uses CBC or GCM. Bootstrap
+  completion and a same-key one-way CBC-to-GCM upgrade remain compatible; full
+  post-adoption response semantics require trusted HTTPS.
+- The health listener disables connection reuse and has per-request bounds plus
+  a fixed aggregate connection cap. Its supplied deployment defaults to
+  loopback.
 - Inform redirects are rejected.
 - A controller response cannot change the configured inform origin; DNS aliases
   are not treated as equivalent.
@@ -62,6 +65,8 @@ administer. Coordinate any live power-path test with the operator.
 - Tagged releases provide an attested multi-platform OCI digest and a
   checksum-verified deployment bundle pinned to that digest. The supplied
   Compose file refuses to render without an explicit `N2U_IMAGE`.
+- GHCR publication uses only `edge` for `main` and the exact version for a
+  release tag; it never publishes `latest` or major/minor floating aliases.
 - Container workflows install an exact Buildx artifact only after verifying its
   reviewed SHA-256 and bootstrap BuildKit from an OCI digest. Publishing builds
   are explicitly cache-cold and the SBOM generator is pinned by OCI digest.
@@ -95,12 +100,14 @@ trusted management network, configure the exact controller origin before
 startup, and inspect the resulting device identity. HTTPS helps only when the
 controller certificate chains to a CA trusted by the container.
 
-After the public-key bootstrap, an adopted session that still uses CBC over
-plain HTTP is treated as an acknowledgement channel, not an authorization
-channel. Its response is parsed and may retain read-only ignored-command
-observations, but state, reset, key, reboot, upgrade, and cadence effects are
-discarded. The only exception is a same-key transition to authenticated GCM.
-Controllers that require effectful post-adoption CBC must use trusted HTTPS.
+After the public-key bootstrap, every adopted plain-HTTP session is treated as
+an acknowledgement channel, not an authorization channel. GCM authenticates
+the response contents but does not correlate them to the current request, so a
+captured or delayed response is not fresh enough to authorize state changes.
+Responses may retain read-only ignored-command observations, but state, reset,
+key, reboot, upgrade, and cadence effects are discarded. The only exception is
+a same-key CBC-to-GCM transition; after that transition, full post-adoption
+response effects still require trusted HTTPS.
 
 The software is provided under the warranty disclaimer in
 [GPL-2.0-only](LICENSE).

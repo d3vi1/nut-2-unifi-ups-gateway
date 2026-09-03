@@ -26,14 +26,13 @@ jobs:
         if: github.ref_type == 'tag'
         shell: bash
         run: |
-          semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+          semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
           if [[ ! "$GITHUB_REF_NAME" =~ $semver_re ]]; then
             echo "Tag must be a SemVer release such as v1.2.3" >&2
             exit 1
           fi
-          without_build=${GITHUB_REF_NAME%%+*}
-          if [[ "$without_build" == *-* ]]; then
-            prerelease=${without_build#*-}
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            prerelease=${GITHUB_REF_NAME#*-}
             IFS=. read -ra identifiers <<< "$prerelease"
             for identifier in "${identifiers[@]}"; do
               if [[ "$identifier" =~ ^[0-9]+$ && ${#identifier} -gt 1 && "$identifier" == 0* ]]; then
@@ -80,28 +79,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Classify stable release tag
-        id: release
-        shell: bash
-        run: |
-          stable=false
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            without_build=${GITHUB_REF_NAME%%+*}
-            if [[ "$without_build" != *-* ]]; then
-              stable=true
-            fi
-          fi
-          echo "stable=$stable" >> "$GITHUB_OUTPUT"
       - name: Compute image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/d3vi1/nut-2-unifi-ups-gateway
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=latest,enable=${{ steps.release.outputs.stable == 'true' }}
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
       - name: Build and push image with SBOM and provenance
         id: push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -248,8 +235,7 @@ jobs:
             --title "NUT 2 UniFi UPS Gateway $RELEASE_VERSION"
             --notes-file "$notes_file"
           )
-          without_build=${GITHUB_REF_NAME%%+*}
-          if [[ "$without_build" == *-* ]]; then
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             release_args+=(--prerelease)
           fi
           gh release create "${release_args[@]}" "$BUNDLE_PATH" "$CHECKSUM_PATH"

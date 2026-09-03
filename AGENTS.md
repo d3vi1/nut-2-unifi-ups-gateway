@@ -18,10 +18,10 @@ can switch power.
   independently verified, credential-free service at the emulated device IP;
   never derive it merely from the upstream client address.
 - Do not infer relay, automatic-relay, or metering capabilities from outlet
-  count, group membership, or UPS-wide measurements. Relay capability requires
-  an affirmative NUT switchability fact on the outlet, its exactly matched
-  group, or the global outlet collection; metering requires a direct outlet
-  current, real-power, or apparent-power variable.
+  count, group membership, or UPS-wide measurements. Preserve affirmative NUT
+  switchability as a native topology fact, but do not advertise `HAS_RELAY`
+  while v1 has no command path. Metering requires a direct outlet current,
+  real-power, or apparent-power variable.
 - Never log NUT passwords, UniFi adoption keys, complete MAC addresses, serials,
   controller replies, or packet captures.
 - Do not mutate host networking, firewall rules, controller configuration, or

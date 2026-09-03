@@ -54,9 +54,10 @@ sticky until `setdefault`; a later `setparam` may rotate the key.
 
 The gateway deliberately narrows those firmware semantics at its trust
 boundary. Controller cadence never changes the local scheduler. After a
-controller key is installed, CBC over plain HTTP is acknowledgement-only apart
-from a same-key one-way upgrade to authenticated GCM; effectful CBC remains
-available only over trusted HTTPS.
+controller key is installed, every plain-HTTP reply is acknowledgement-only:
+GCM proves envelope integrity but not association with the current request. A
+same-key one-way CBC-to-GCM upgrade remains available; all other effectful
+post-adoption replies require trusted HTTPS.
 
 ## Genuine firmware protocol inventory
 
@@ -161,13 +162,14 @@ compatibility choices:
 | exact `outlet.group.G.id` match with consistent optional count | associates group metadata/status/switchability | evidence-bound **CANDIDATE** mapping |
 | unambiguous USB `outlet.N.type` or `.designator` | `0x20000` physical-class bit | conservative **CANDIDATE** mapping |
 | other or absent type/designator | `0x10000` AC-compatible bit | interoperability **CANDIDATE**, not a native-type assertion |
-| affirmative outlet, matched-group, or global NUT `switchable=yes` | `HAS_RELAY` (`0x00001`), with outlet precedence | evidence-bound **CANDIDATE** mapping |
+| affirmative outlet, matched-group, or global NUT `switchable=yes` | retained as native topology evidence; no `HAS_RELAY` bit in read-only v1 | evidence-bound **CANDIDATE** observation |
 | direct outlet current, real-power, or apparent-power key | `POWER_METER` (`0x00002`) | evidence-bound **CANDIDATE** mapping |
 
 NUT outlet type and designator are opaque; USB is recognized only from an
 unambiguous value, not from a name, description, or guessed connector taxonomy.
-`AUTO_RELAY` (`0x00004`) and the unresolved low-order bit `0x00008` are never
-inferred, and no physical `button_group` is invented. Voltage and power factor
+`HAS_RELAY` (`0x00001`), `AUTO_RELAY` (`0x00004`), and the unresolved low-order
+bit `0x00008` are never emitted from NUT observations, and no physical
+`button_group` is invented. Voltage and power factor
 alone do not establish `POWER_METER`. Device-level and outlet-group electrical
 values are never spread across outlets, so a real UPS total cannot appear as
 fabricated identical per-outlet amperage. Shared relay states are emitted

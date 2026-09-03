@@ -143,9 +143,9 @@ func projectOutletTopology(profile string, observation model.State) []inform.Out
 			if source.Type == model.OutletTypeUSB {
 				capabilities = inform.OutletCapabilityUSB
 			}
-			if source.Switchable.Known && source.Switchable.Value {
-				capabilities |= inform.OutletCapabilityHasRelay
-			}
+			// Switchable remains a native topology fact. Gateway v1 has no NUT
+			// command path, so advertising HAS_RELAY would create a writable
+			// controller affordance that this read-only projection cannot honor.
 			if source.PowerMeter {
 				capabilities |= inform.OutletCapabilityPowerMeter
 			}

@@ -638,7 +638,10 @@ func validatePowerDeviceReport(r PowerDeviceReport, spec profileSpec) error {
 			if outlet.Index == 0 || outlet.Capabilities == nil {
 				return errors.New("inform: projected outlet requires explicit index and capabilities")
 			}
-			const allowed = OutletCapabilityHasRelay | OutletCapabilityPowerMeter | OutletCapabilityAC | OutletCapabilityUSB
+			allowed := OutletCapabilityPowerMeter | OutletCapabilityAC | OutletCapabilityUSB
+			if r.OutletTopologySource == OutletTopologyCarrierFallback {
+				allowed = OutletCapabilityAC
+			}
 			if *outlet.Capabilities&^allowed != 0 {
 				return errors.New("inform: projected outlet has unsupported capabilities")
 			}

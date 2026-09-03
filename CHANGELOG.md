@@ -10,10 +10,10 @@ All notable changes are documented here. The project follows
 - Experimental projection of NUT-observed outlet counts and relay groups,
   including deterministic remapping of opaque `outlet.N.groupid` values and
   singleton groups when the native group identifier is absent.
-- Conservative AC/USB outlet classification and evidence-bound `HAS_RELAY`
-  mapping from outlet, matched-group, or global switchability plus
-  `POWER_METER` mapping from direct outlet-scoped NUT facts, without treating
-  voltage or power factor alone as proof of a power meter.
+- Conservative AC/USB outlet classification and `POWER_METER` mapping from
+  direct outlet-scoped NUT facts, without treating voltage or power factor
+  alone as proof of a power meter. NUT switchability is retained as descriptive
+  topology but does not advertise a writable `HAS_RELAY` bit.
 - Unit-preserving UPS-wide mapping for `ups.realpower.nominal` and preservation
   of standard `ups.beeper.status` values without adding a buzzer write path.
 - An experimental, default-off, credential-free advertisement for a separately
@@ -48,11 +48,13 @@ All notable changes are documented here. The project follows
   `N2U_INFORM_INTERVAL` is authoritative, so a captured cadence reply cannot
   regain an effect after restart and routine informs do not wear the state
   volume.
-- After a controller key is installed, adopted CBC replies over plain HTTP are
-  acknowledgement-only. State, reset, key, reboot, upgrade, and cadence effects
-  require GCM or trusted HTTPS; a same-key one-way GCM upgrade remains allowed.
+- After a controller key is installed, all adopted replies over plain HTTP are
+  acknowledgement-only, including authenticated GCM whose envelope cannot prove
+  request freshness. State, reset, key, reboot, upgrade, and cadence effects
+  require trusted HTTPS; a same-key one-way CBC-to-GCM upgrade remains allowed.
 - The identity-free health listener now has a shutdown-safe aggregate
-  connection cap in addition to its existing time and header bounds.
+  connection cap, disables connection reuse, and retains its time and header
+  bounds.
 - Tagged releases now publish an attested multi-platform digest and a
   checksum-verified Synology bundle whose generated `.env` uses that exact OCI
   digest. Compose fails closed if `N2U_IMAGE` is absent instead of pulling a
@@ -62,6 +64,9 @@ All notable changes are documented here. The project follows
   drift behind mutable defaults.
 - Publishing builds are explicitly cache-cold and the official BuildKit Syft
   SBOM generator is pinned to a reviewed version and OCI index digest.
+- Published image aliases are deliberately non-floating: `edge` belongs only to
+  `main`, release tags publish only their exact SemVer, and build-metadata tags
+  are rejected because OCI tag normalization is not injective.
 
 ## 0.1.0-alpha.1 - 2026-09-02
 

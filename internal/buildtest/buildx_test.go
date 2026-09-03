@@ -89,6 +89,54 @@ func TestPublishingBuildIsCacheColdAndPinsItsSBOMGenerator(t *testing.T) {
 	}
 }
 
+func TestPublishedImageTagsAreExactAndNonFloating(t *testing.T) {
+	release := readRepositoryFile(t, ".github", "workflows", "release.yml")
+	metadataStart := strings.Index(release, "      - name: Compute image metadata\n")
+	metadataEnd := strings.Index(release, "      - name: Build and push image with SBOM and provenance\n")
+	if metadataStart < 0 || metadataEnd <= metadataStart {
+		t.Fatal("cannot isolate the image metadata step")
+	}
+	metadata := release[metadataStart:metadataEnd]
+
+	for name, want := range map[string]string{
+		"main-only edge tag":           "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}",
+		"exact SemVer tag":             "type=semver,pattern={{version}}",
+		"disabled implicit latest tag": "flavor: |\n            latest=false\n",
+	} {
+		if got := strings.Count(metadata, want); got != 1 {
+			t.Errorf("image metadata contains %d %s markers %q; want 1", got, name, want)
+		}
+	}
+	for name, forbidden := range map[string]string{
+		"latest alias":          "type=raw,value=latest",
+		"major/minor alias":     "pattern={{major}}.{{minor}}",
+		"ref-derived tag":       "type=ref",
+		"commit-derived tag":    "type=sha",
+		"stable classification": "steps.release.outputs",
+	} {
+		if strings.Contains(metadata, forbidden) {
+			t.Errorf("image metadata contains forbidden %s %q", name, forbidden)
+		}
+	}
+
+	validateStart := strings.Index(release, "      - name: Validate release tag\n")
+	validateEnd := strings.Index(release, "      - name: Require a public repository for tagged releases\n")
+	if validateStart < 0 || validateEnd <= validateStart {
+		t.Fatal("cannot isolate release-tag validation")
+	}
+	validateTag := release[validateStart:validateEnd]
+	wantTagRegex := "semver_re='^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*))?$'"
+	if got := strings.Count(validateTag, wantTagRegex); got != 1 {
+		t.Errorf("release validation contains %d exact no-build-metadata SemVer regexes; want 1", got)
+	}
+	if strings.Contains(release, "without_build=") {
+		t.Fatal("release validation strips SemVer build metadata instead of rejecting it")
+	}
+	if strings.Contains(release, "      - name: Classify stable release tag\n") {
+		t.Fatal("release workflow retains obsolete floating-tag classification")
+	}
+}
+
 func TestWorkflowsUseOnlyThePinnedLocalBuilder(t *testing.T) {
 	for _, workflow := range []string{"ci.yml", "release.yml"} {
 		contents := readRepositoryFile(t, ".github", "workflows", workflow)

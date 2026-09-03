@@ -52,11 +52,13 @@ valid, bounded, positive `outlet.count`:
    not classify an outlet. Every other value receives an AC-compatible wire
    projection; this is an interoperability fallback, not proof of the physical
    receptacle type.
-4. It adds `HAS_RELAY` only from an affirmative NUT `switchable=yes` fact on
-   the outlet, its exactly matched group, or the global outlet collection. It
-   adds `POWER_METER` only when that outlet directly exposes `current`,
-   `realpower`, or apparent `power`. It never infers `AUTO_RELAY` or the
-   unresolved low-order bit 3, and it does not invent a physical button group.
+4. It retains an affirmative NUT `switchable=yes` fact on the outlet, its
+   exactly matched group, or the global outlet collection as native topology
+   evidence, but does not emit the writable `HAS_RELAY` bit while v1 has no NUT
+   command path. It adds `POWER_METER` only when that outlet directly exposes
+   `current`, `realpower`, or apparent `power`. It never infers `AUTO_RELAY` or
+   the unresolved low-order bit 3, and it does not invent a physical button
+   group.
 5. It projects only outlet-scoped voltage, current, real-power, and power-factor
    samples that parse successfully. Apparent power can establish meter
    capability but is not mislabeled as real watts. UPS-wide and outlet-group
@@ -115,6 +117,9 @@ request count, without identities or command contents.
 Observed NUT `groupid` values therefore describe topology only. UniFi relay
 requests are decoded for protocol visibility and ignored; they never become a
 NUT command, whether a group contains one outlet or many.
+Observed NUT rows consequently omit `HAS_RELAY` even when the upstream driver
+describes them as switchable. Relay grouping and observed state remain visible
+without promising a writable operation.
 
 The device-level smart-power bitmap uses a fail-closed allowlist. Only
 controller-owned safe-shutdown timing is advertised by default (`0x08`);

@@ -122,6 +122,15 @@ default. An advanced, experimental advertisement is available only for a NUT
 service that you have independently verified at that exact LAN IP, UPS name,
 and port. See [NUT Server advertisement](docs/configuration.md#optional-nut-server-advertisement).
 
+For the common Synology service named `ups` on the standard NUT port, enable it
+in `.env` only after that read-only reachability check succeeds:
+
+```dotenv
+N2U_UNIFI_NUT_SERVER_ENABLED=true
+N2U_UNIFI_NUT_SERVER_ID=ups
+N2U_UNIFI_NUT_SERVER_PORT=3493
+```
+
 ### 3. Validate and start
 
 ```bash
@@ -161,8 +170,9 @@ conservatively:
   no group ID becomes its own group.
 - An unmistakable USB type/designator is shown as USB. Other types use an
   AC-compatible presentation.
-- Relay capability appears only when NUT says the outlet, its matched group, or
-  the outlet collection is switchable.
+- NUT switchability and relay groups remain descriptive topology facts. The
+  writable UniFi `HAS_RELAY` bit is deliberately omitted because this gateway
+  has no power-command path.
 - Power-meter capability appears only when NUT publishes direct per-outlet
   current, real-power, or apparent-power data.
 - UPS-wide and group-wide totals are never divided into invented per-outlet

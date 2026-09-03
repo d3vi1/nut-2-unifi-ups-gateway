@@ -1,7 +1,9 @@
 package health
 
 import (
+	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -94,6 +96,67 @@ func TestServerBoundsRequestHeaders(t *testing.T) {
 	}
 	if server.ReadHeaderTimeout <= 0 || server.ReadTimeout <= 0 || server.WriteTimeout <= 0 || server.IdleTimeout <= 0 {
 		t.Fatal("health server must retain bounded I/O timeouts")
+	}
+}
+
+func TestServerDisablesKeepAlives(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := Server(listener.Addr().String(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	serveResult := make(chan error, 1)
+	go func() {
+		serveResult <- server.Serve(LimitConnections(listener))
+	}()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			t.Errorf("shutdown health server: %v", err)
+		}
+		select {
+		case err := <-serveResult:
+			if !errors.Is(err, http.ErrServerClosed) {
+				t.Errorf("Serve returned %v, want http.ErrServerClosed", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("health server did not stop after shutdown")
+		}
+	})
+
+	var dials atomic.Int32
+	dialer := &net.Dialer{Timeout: time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dials.Add(1)
+			return dialer.DialContext(ctx, network, address)
+		},
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport, Timeout: time.Second}
+
+	for requestNumber := 1; requestNumber <= 2; requestNumber++ {
+		response, err := client.Get("http://" + listener.Addr().String() + "/healthz")
+		if err != nil {
+			t.Fatalf("request %d: %v", requestNumber, err)
+		}
+		_, readErr := io.Copy(io.Discard, response.Body)
+		closeErr := response.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read response %d: %v", requestNumber, readErr)
+		}
+		if closeErr != nil {
+			t.Fatalf("close response %d: %v", requestNumber, closeErr)
+		}
+		if !response.Close {
+			t.Fatalf("response %d did not require closing its connection", requestNumber)
+		}
+	}
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("connection dials = %d, want 2 for two sequential requests", got)
 	}
 }
 

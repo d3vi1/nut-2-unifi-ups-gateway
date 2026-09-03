@@ -152,7 +152,7 @@ func (m *Monitor) Handler() http.Handler {
 }
 
 func Server(address string, handler http.Handler) *http.Server {
-	return &http.Server{
+	server := &http.Server{
 		Addr:              address,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -164,6 +164,8 @@ func Server(address string, handler http.Handler) *http.Server {
 			return context.Background()
 		},
 	}
+	server.SetKeepAlivesEnabled(false)
+	return server
 }
 
 // LimitConnections bounds aggregate health-listener socket and goroutine

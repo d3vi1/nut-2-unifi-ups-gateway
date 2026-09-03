@@ -52,11 +52,12 @@ which makes captured cadence replies inert across process restarts without
 rewriting the state volume on every ordinary inform.
 
 Initial adoption uses firmware-compatible CBC and a public bootstrap key, so it
-must occur on a trusted management LAN. Once a controller key is installed,
-plain-HTTP CBC replies are acknowledgement-only: configuration, reset, key,
-reboot, upgrade, and cadence effects are suppressed. A same-key one-way upgrade
-to GCM remains available. Full controller response effects require authenticated
-GCM or HTTPS with a certificate trusted by the container.
+must occur on a trusted management LAN. Once a controller key is installed, all
+plain-HTTP replies are acknowledgement-only: configuration, reset, key, reboot,
+upgrade, and cadence effects are suppressed. GCM authenticates contents but
+does not prove that a response belongs to the current request. A same-key
+one-way upgrade from CBC to GCM remains available; full post-adoption response
+effects require HTTPS with a certificate trusted by the container.
 
 ### Optional NUT Server advertisement
 
@@ -122,11 +123,12 @@ outlets. The following native facts control each projected row:
 | matching `outlet.group.G.id` | Associates group metadata/status by exact opaque ID when optional group count agrees; numeric IDs are not table indices |
 | unambiguous USB `outlet.N.type` or `outlet.N.designator` | USB physical-class bit `0x20000` |
 | any other or missing type/designator | AC-compatible physical-class bit `0x10000`; not a physical-type claim |
-| affirmative outlet, exactly matched group, or global `switchable=yes` | `HAS_RELAY` bit `0x00001`; outlet fact has highest precedence |
+| affirmative outlet, exactly matched group, or global `switchable=yes` | Retained as native descriptive topology; no writable `HAS_RELAY` bit is emitted in v1 |
 | direct `outlet.N.current`, `outlet.N.realpower`, or `outlet.N.power` key | `POWER_METER` bit `0x00002` |
 
-`AUTO_RELAY` (`0x00004`) and the unresolved low-order bit `0x00008` are never
-inferred from NUT. `POWER_METER` requires a direct outlet-scoped current,
+`HAS_RELAY` (`0x00001`), `AUTO_RELAY` (`0x00004`), and the unresolved low-order
+bit `0x00008` are never emitted from NUT observations. `POWER_METER` requires a
+direct outlet-scoped current,
 real-power, or apparent-power variable. Voltage or power factor alone does not
 establish that capability. A malformed sample is omitted from telemetry, while
 the presence of its direct variable still describes meter capability. UPS-wide
@@ -148,7 +150,8 @@ All relay groups are descriptive in gateway v1. The process has no NUT command
 method; controller relay requests are ignored and cannot switch the upstream
 UPS. Rows in a shared group report a consistent relay state. A directly matched
 group status may supply it; otherwise conflicting or incomplete member evidence
-makes that state unknown. Unknown `N2U_` variables,
+makes that state unknown. Switchability remains available internally for future
+evidence work but is not converted into a writable UniFi capability. Unknown `N2U_` variables,
 including proposed control/command settings, are rejected.
 
 ## UPS-wide electrical and buzzer data
