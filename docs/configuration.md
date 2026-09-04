@@ -32,6 +32,7 @@ network without transport encryption; it is not suitable for an untrusted LAN.
 | `N2U_UNIFI_MODEL` | `USWDA26` | Controller-recognized UPS carrier: `USWDA26` or `USPDA2C` |
 | `N2U_UNIFI_VERSION` | `1.6.1` | `1.6.1` or the exact selected build (`1.6.1.413`/`1.6.1.4933`) |
 | `N2U_INFORM_URL` | `http://unifi:8080/inform` | HTTP(S), `/inform`, no credentials/query/fragment |
+| `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC` | `false` | Boolean; explicit plain-HTTP compatibility opt-in |
 | `N2U_INFORM_INTERVAL` | `10s` | 1 second–10 minutes; sole runtime inform cadence |
 | `N2U_INFORM_TIMEOUT` | `10s` | 1 second–1 minute |
 | `N2U_DISCOVERY_INTERVAL` | `30s` | 5 seconds–10 minutes |
@@ -52,12 +53,41 @@ which makes captured cadence replies inert across process restarts without
 rewriting the state volume on every ordinary inform.
 
 Initial adoption uses firmware-compatible CBC and a public bootstrap key, so it
-must occur on a trusted management LAN. Once a controller key is installed, all
-plain-HTTP replies are acknowledgement-only: configuration, reset, key, reboot,
-upgrade, and cadence effects are suppressed. GCM authenticates contents but
-does not prove that a response belongs to the current request. A same-key
-one-way upgrade from CBC to GCM remains available; full post-adoption response
-effects require HTTPS with a certificate trusted by the container.
+must occur on a trusted management LAN. Once a controller key is installed,
+plain-HTTP replies are acknowledgement-only by default: configuration, reset,
+key, reboot, upgrade, and cadence effects are suppressed. GCM authenticates
+contents but does not prove that a response belongs to the current request. A
+same-key one-way upgrade from CBC to GCM remains available; full post-adoption
+response effects require HTTPS with a certificate trusted by the container.
+
+### Plain-HTTP GCM cfgversion compatibility
+
+`N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC` is a narrow, default-off
+interoperability experiment for rename-related configuration changes. Whether
+it clears **Getting Ready** remains **CANDIDATE** until
+exact-build live acceptance. Enable the option only when the configured inform
+endpoint is plain HTTP on a trusted management LAN.
+
+When enabled, the exception applies only after adoption, with a non-default
+controller key, to an authenticated GCM `setparam` response. Its `mgmt_cfg`
+must contain exactly one non-empty entry: a syntactically valid
+`cfgversion=...`. Any additional or unknown `mgmt_cfg` entry—including
+`authkey`, inform URL, encryption mode, or adoption-state changes—disables the
+volatile acknowledgement. The accepted `cfgversion` may be mirrored into
+subsequent inform payloads in memory for the lifetime of the process.
+
+`system_cfg` may accompany that response, but it remains observation-only and
+is ignored. The gateway also does not apply inform cadence, restart, upgrade,
+relay, or other power-control requests from the response.
+
+This marker is not saved to the state file, and its response nonce is not added
+to the persistent state-changing replay window. Restarting therefore returns
+to the last persisted `cfgversion`; if another eligible `setparam` later
+arrives, the gateway may mirror that marker again. This behavior alone does
+not establish any Network UI state transition. GCM does not provide
+request-response correlation, so a delayed but authentic response can
+temporarily replace the in-memory marker. Do not enable this option on an
+untrusted or shared network.
 
 ### Optional NUT Server advertisement
 

@@ -49,10 +49,19 @@ administer. Coordinate any live power-path test with the operator.
   in a separate bounded window and saved atomically with that transition.
 - Controller-supplied inform intervals never control the runtime scheduler;
   `N2U_INFORM_INTERVAL` remains the sole cadence source.
-- Adopted replies over plain HTTP cannot change state or cadence after a
-  controller key is installed, whether TNBU uses CBC or GCM. Bootstrap
+- Adopted replies over plain HTTP cannot change persistent state or cadence
+  after a controller key is installed, whether TNBU uses CBC or GCM. Bootstrap
   completion and a same-key one-way CBC-to-GCM upgrade remain compatible; full
   post-adoption response semantics require trusted HTTPS.
+- The default-off `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC` exception can
+  mirror only a syntactically valid `cfgversion` from an authenticated GCM
+  `setparam` after adoption with a non-default key, and only when `mgmt_cfg`
+  contains exactly that one non-empty entry. Any additional or unknown
+  `mgmt_cfg` entry disables the acknowledgement. It changes only the in-memory
+  report marker: accompanying `system_cfg` remains observed and ignored; no
+  key, URL, mode, adoption, cadence, restart, upgrade, relay, or power-control
+  effect is applied. The state file remains unchanged. Persistent replay nonces
+  remain unchanged.
 - The health listener disables connection reuse and has per-request bounds plus
   a fixed aggregate connection cap. Its supplied deployment defaults to
   loopback.
@@ -151,11 +160,27 @@ controller certificate chains to a CA trusted by the container.
 After the public-key bootstrap, every adopted plain-HTTP session is treated as
 an acknowledgement channel, not an authorization channel. GCM authenticates
 the response contents but does not correlate them to the current request, so a
-captured or delayed response is not fresh enough to authorize state changes.
-Responses may retain read-only ignored-command observations, but state, reset,
-key, reboot, upgrade, and cadence effects are discarded. The only exception is
-a same-key CBC-to-GCM transition; after that transition, full post-adoption
-response effects still require trusted HTTPS.
+captured or delayed response is not fresh enough to authorize persistent state
+changes. Responses may retain read-only ignored-command observations, but
+state, reset, key, reboot, upgrade, and cadence effects are discarded. The
+always-available exception is a same-key CBC-to-GCM transition; after that
+transition, full post-adoption response effects still require trusted HTTPS.
+
+Operators on a trusted management LAN may explicitly enable the **CANDIDATE**
+`N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC` interoperability option for
+controlled testing after a rename-related configuration change. Whether it
+clears **Getting Ready** remains **CANDIDATE** until exact-build live acceptance.
+It mirrors a marker only; it does not establish that Network will clear
+**Getting Ready**. The exception accepts only a syntactically valid `cfgversion`
+from an authenticated GCM `setparam` under a non-default key. Its `mgmt_cfg`
+must contain exactly one non-empty entry, `cfgversion=...`; any other entry
+prevents the mirror. An accompanying `system_cfg` may still be observed but is
+ignored. The marker is used only in inform payloads for the current process,
+and neither it nor the response nonce is written to persistent state. Restart
+returns to the persisted marker; any later controller `setparam` is evaluated
+again. A delayed authentic response can temporarily replace the volatile
+marker, which is why the option is off by default and must not be used across
+an untrusted network.
 
 The software is provided under the warranty disclaimer in
 [GPL-2.0-only](LICENSE).

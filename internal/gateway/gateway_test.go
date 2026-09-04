@@ -288,8 +288,8 @@ func TestAdoptedGCMOverHTTPIsAcknowledgementOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := adoptionFromState(service.persistent)
-			if after != before || saveCalls != 0 || authorizeCalls != 0 {
-				t.Fatalf("adopted GCM/HTTP changed state: before=%+v after=%+v saves=%d authorizations=%d", before, after, saveCalls, authorizeCalls)
+			if after != before || service.reportedCfgVersion != before.CfgVersion || saveCalls != 0 || authorizeCalls != 0 {
+				t.Fatalf("adopted GCM/HTTP changed state: before=%+v after=%+v report_cfg=%q saves=%d authorizations=%d", before, after, service.reportedCfgVersion, saveCalls, authorizeCalls)
 			}
 			if outcome.Interval != 0 || outcome.StateChanged || outcome.InformURLChanged || outcome.RestartRequested || outcome.UpgradeVersion != "" {
 				t.Fatalf("adopted GCM/HTTP exposed an effect: %+v", outcome)
@@ -298,6 +298,246 @@ func TestAdoptedGCMOverHTTPIsAcknowledgementOnly(t *testing.T) {
 				t.Fatalf("read-only observations = cycles %d settings %d, want %d/%d", len(outcome.CycleIntents), len(outcome.UnsupportedSettings), test.wantCycles, test.wantUnsupported)
 			}
 		})
+	}
+}
+
+func TestVolatileHTTPCfgVersionSyncEchoesOnlySoleMgmtCfgVersion(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	configuration.UniFi.VolatileHTTPCfgVersionSync = true
+	seedManagedGCMState(t, configuration, testControllerKey, "persisted")
+	stateBefore, err := os.ReadFile(configuration.Runtime.StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const nextKey = "ffeeddccbbaa99887766554433221100"
+	explicitNonce := [16]byte{0xb1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	responses := [][]byte{
+		encodeGCMControllerResponse(t, testControllerKey, explicitNonce, []byte(`{"_type":"setparam","cmd":"relayctl","interval":86400,"mgmt_cfg":"cfgversion=controller-desired\n","system_cfg":"nutserver.status=enabled\npower_cycle_on_ac_recovery.status=enabled\nbeep.status=disabled\n","outlet_table":[{"index":1,"delay_time_to_off":0,"delay_time_to_on":0}]}`)),
+		encodeGCMControllerResponse(t, testControllerKey, [16]byte{0xb2, 1}, []byte(`{"_type":"setparam","mgmt_cfg":"authkey=`+nextKey+`\n","system_cfg":"outlet.status=disabled\n"}`)),
+		encodeGCMControllerResponse(t, testControllerKey, [16]byte{0xb3, 1}, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=must-not-acknowledge\nunknown.setting=value\n"}`)),
+		encodeGCMControllerResponse(t, testControllerKey, [16]byte{0xb4, 1}, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=must-not-acknowledge\nauthkey=`+nextKey+`\ninform_url=http://192.0.2.99:8080/inform\n"}`)),
+		encodeGCMControllerResponse(t, testControllerKey, [16]byte{0xb5, 1}, []byte(`{"_type":"noop"}`)),
+	}
+	requestCfgVersions := make([]string, 0, 6)
+	controllerCalls := 0
+	authorizeCalls := 0
+	controller := &functionalController{
+		exchange: func(_ context.Context, _ string, request []byte) ([]byte, error) {
+			requestCfgVersions = append(requestCfgVersions, decodedRequestCfgVersion(t, request, testControllerKey, inform.ModeGCM))
+			index := controllerCalls
+			controllerCalls++
+			if index == len(responses) {
+				return append([]byte(nil), responses[0]...), nil
+			}
+			return append([]byte(nil), responses[index]...), nil
+		},
+		authorize: func(context.Context, string, string) error {
+			authorizeCalls++
+			return nil
+		},
+	}
+	saveCalls := 0
+	service := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+		saveCalls++
+		return nil
+	})
+
+	first, err := service.InformOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Kind != inform.ResponseSetParam || first.StateChanged || first.InformURLChanged || first.RestartRequested || first.UpgradeVersion != "" || len(first.CycleIntents) != 0 {
+		t.Fatalf("mixed setparam escaped response confinement: %+v", first)
+	}
+	if got := strings.Join(first.UnsupportedSettings, ","); got != "nut-server,power-cycle-on-ac-recovery,buzzer" {
+		t.Fatalf("unsupported settings = %q", got)
+	}
+	if service.reportedCfgVersion != "controller-desired" {
+		t.Fatalf("volatile report cfgversion = %q", service.reportedCfgVersion)
+	}
+	if service.persistent.Adoption.CfgVersion != "persisted" || service.persistent.Adoption.AuthKey != testControllerKey || service.persistent.Adoption.InformURL != configuration.UniFi.InformURL {
+		t.Fatalf("volatile sync mutated adoption state: %+v", service.persistent.Adoption)
+	}
+
+	second, err := service.InformOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.StateChanged || service.reportedCfgVersion != "controller-desired" {
+		t.Fatalf("cfgversion-absent setparam changed volatile state: outcome=%+v report_cfg=%q", second, service.reportedCfgVersion)
+	}
+	third, err := service.InformOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.StateChanged || service.reportedCfgVersion != "controller-desired" {
+		t.Fatalf("unknown mgmt_cfg entry gained volatile authority: outcome=%+v report_cfg=%q", third, service.reportedCfgVersion)
+	}
+	fourth, err := service.InformOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fourth.StateChanged || service.reportedCfgVersion != "controller-desired" {
+		t.Fatalf("key or endpoint change gained volatile authority: outcome=%+v report_cfg=%q", fourth, service.reportedCfgVersion)
+	}
+	if _, err := service.InformOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.InformOnce(context.Background()); !errors.Is(err, ErrControllerResponseReplay) {
+		t.Fatalf("immediate volatile setparam replay error = %v", err)
+	}
+
+	if got := strings.Join(requestCfgVersions, ","); got != "persisted,controller-desired,controller-desired,controller-desired,controller-desired,controller-desired" {
+		t.Fatalf("reported request cfgversions = %q", got)
+	}
+	if saveCalls != 0 || authorizeCalls != 0 {
+		t.Fatalf("volatile sync performed durable work: saves=%d authorizations=%d", saveCalls, authorizeCalls)
+	}
+	if len(service.persistent.Adoption.GCMReplayNonces) != 0 || len(service.gcmReplay.protectedOrder) != 0 {
+		t.Fatalf("volatile response nonce gained persistence: state=%d protected=%d", len(service.persistent.Adoption.GCMReplayNonces), len(service.gcmReplay.protectedOrder))
+	}
+	stateAfter, err := os.ReadFile(configuration.Runtime.StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stateBefore, stateAfter) {
+		t.Fatal("volatile cfgversion sync changed state-file bytes")
+	}
+}
+
+func TestVolatileHTTPCfgVersionSyncResetsOnRestart(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	configuration.UniFi.VolatileHTTPCfgVersionSync = true
+	seedManagedGCMState(t, configuration, testControllerKey, "persisted")
+	stateBefore, err := os.ReadFile(configuration.Runtime.StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstWire := encodeGCMControllerResponse(t, testControllerKey, [16]byte{0xc1, 1}, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=volatile\n"}`))
+	first := newReplayTestGateway(t, configuration, now, &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		return append([]byte(nil), firstWire...), nil
+	}}, func(string, state.State) error {
+		t.Fatal("volatile cfgversion attempted a state save")
+		return nil
+	})
+	if _, err := first.InformOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if first.reportedCfgVersion != "volatile" || first.persistent.Adoption.CfgVersion != "persisted" {
+		t.Fatalf("first process state mismatch: report=%q persistent=%q", first.reportedCfgVersion, first.persistent.Adoption.CfgVersion)
+	}
+
+	requestCfgVersion := ""
+	restartWire := encodeGCMControllerResponse(t, testControllerKey, [16]byte{0xc2, 1}, []byte(`{"_type":"noop"}`))
+	restarted := newReplayTestGateway(t, configuration, now, &functionalController{exchange: func(_ context.Context, _ string, request []byte) ([]byte, error) {
+		requestCfgVersion = decodedRequestCfgVersion(t, request, testControllerKey, inform.ModeGCM)
+		return append([]byte(nil), restartWire...), nil
+	}}, func(string, state.State) error {
+		t.Fatal("restart noop attempted a state save")
+		return nil
+	})
+	if restarted.reportedCfgVersion != "persisted" {
+		t.Fatalf("restart initialized report cfgversion %q", restarted.reportedCfgVersion)
+	}
+	if _, err := restarted.InformOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requestCfgVersion != "persisted" {
+		t.Fatalf("restart reported cfgversion %q", requestCfgVersion)
+	}
+	stateAfter, err := os.ReadFile(configuration.Runtime.StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stateBefore, stateAfter) {
+		t.Fatal("volatile cfgversion survived restart through state bytes")
+	}
+}
+
+func TestVolatileHTTPCfgVersionSyncRejectsDefaultKeyAuthority(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	configuration.UniFi.VolatileHTTPCfgVersionSync = true
+	seedManagedGCMState(t, configuration, inform.DefaultKey, "persisted")
+	responses := [][]byte{
+		encodeGCMControllerResponse(t, inform.DefaultKey, [16]byte{0xd1, 1}, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=untrusted\n"}`)),
+		encodeGCMControllerResponse(t, inform.DefaultKey, [16]byte{0xd2, 1}, []byte(`{"_type":"noop"}`)),
+	}
+	requestCfgVersions := make([]string, 0, len(responses))
+	call := 0
+	controller := &functionalController{exchange: func(_ context.Context, _ string, request []byte) ([]byte, error) {
+		requestCfgVersions = append(requestCfgVersions, decodedRequestCfgVersion(t, request, inform.DefaultKey, inform.ModeGCM))
+		wire := responses[call]
+		call++
+		return append([]byte(nil), wire...), nil
+	}}
+	saveCalls := 0
+	service := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+		saveCalls++
+		return nil
+	})
+	for range responses {
+		if _, err := service.InformOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := strings.Join(requestCfgVersions, ","); got != "persisted,persisted" {
+		t.Fatalf("default-key response changed reported cfgversion: %q", got)
+	}
+	if service.reportedCfgVersion != "persisted" || service.persistent.Adoption.CfgVersion != "persisted" || saveCalls != 0 {
+		t.Fatalf("default-key response gained authority: report=%q persistent=%q saves=%d", service.reportedCfgVersion, service.persistent.Adoption.CfgVersion, saveCalls)
+	}
+}
+
+func TestVolatileHTTPCfgVersionSyncIsBoundedAndWriteFree(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	configuration := baseConfig(t)
+	configuration.UniFi.VolatileHTTPCfgVersionSync = true
+	seedManagedGCMState(t, configuration, testControllerKey, "persisted")
+	stateBefore, err := os.ReadFile(configuration.Runtime.StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const extraResponses = 9
+	responseCount := state.MaxGCMReplayNonces + extraResponses
+	call := 0
+	controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) {
+		index := call
+		call++
+		nonce := [16]byte{byte(index >> 8), byte(index), 0xee, 1}
+		payload := []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=volatile-` + integerString(index) + `\n"}`)
+		return encodeGCMControllerResponse(t, testControllerKey, nonce, payload), nil
+	}}
+	saveCalls := 0
+	service := newReplayTestGateway(t, configuration, now, controller, func(string, state.State) error {
+		saveCalls++
+		return nil
+	})
+	for index := 0; index < responseCount; index++ {
+		if _, err := service.InformOnce(context.Background()); err != nil {
+			t.Fatalf("volatile response %d failed: %v", index, err)
+		}
+	}
+	if service.reportedCfgVersion != "volatile-"+integerString(responseCount-1) {
+		t.Fatalf("last volatile cfgversion = %q", service.reportedCfgVersion)
+	}
+	if saveCalls != 0 || service.persistent.Adoption.CfgVersion != "persisted" || len(service.persistent.Adoption.GCMReplayNonces) != 0 {
+		t.Fatalf("volatile responses changed persistent state: cfg=%q saves=%d nonces=%d", service.persistent.Adoption.CfgVersion, saveCalls, len(service.persistent.Adoption.GCMReplayNonces))
+	}
+	if len(service.gcmReplay.recentOrder) != state.MaxGCMReplayNonces || len(service.gcmReplay.recentSeen) != state.MaxGCMReplayNonces || len(service.gcmReplay.protectedOrder) != 0 || len(service.gcmReplay.protectedSeen) != 0 {
+		t.Fatalf("volatile replay windows are unbounded or protected: recent=%d/%d protected=%d/%d", len(service.gcmReplay.recentOrder), len(service.gcmReplay.recentSeen), len(service.gcmReplay.protectedOrder), len(service.gcmReplay.protectedSeen))
+	}
+	stateAfter, err := os.ReadFile(configuration.Runtime.StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stateBefore, stateAfter) {
+		t.Fatal("bounded volatile sync changed state-file bytes")
 	}
 }
 
@@ -385,12 +625,13 @@ func TestHTTPSGCMResponseRetainsFullEffects(t *testing.T) {
 		saveCalls++
 		return nil
 	})
+	service.reportedCfgVersion = "stale-volatile-marker"
 	outcome, err := service.InformOnce(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !outcome.StateChanged || service.persistent.Adoption.CfgVersion != "2" || saveCalls != 1 {
-		t.Fatalf("HTTPS/GCM state change was suppressed: outcome=%+v state=%+v saves=%d", outcome, service.persistent.Adoption, saveCalls)
+	if !outcome.StateChanged || service.persistent.Adoption.CfgVersion != "2" || service.reportedCfgVersion != "2" || saveCalls != 1 {
+		t.Fatalf("HTTPS/GCM state change was suppressed: outcome=%+v state=%+v report_cfg=%q saves=%d", outcome, service.persistent.Adoption, service.reportedCfgVersion, saveCalls)
 	}
 }
 
@@ -494,12 +735,13 @@ func TestCBCTrustBoundariesPreserveLegitimateTransitions(t *testing.T) {
 		wire := encodeCBCControllerResponse(t, testControllerKey, []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=2\nuse_aes_gcm=on\n"}`))
 		controller := &functionalController{exchange: func(context.Context, string, []byte) ([]byte, error) { return wire, nil }}
 		service := newReplayTestGateway(t, configuration, now, controller, nil)
+		service.reportedCfgVersion = "stale-volatile-marker"
 		outcome, err := service.InformOnce(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !service.persistent.Adoption.UseAESGCM || service.persistent.Adoption.CfgVersion != "1" || !outcome.StateChanged {
-			t.Fatalf("confined GCM upgrade mismatch: state=%+v outcome=%+v", service.persistent.Adoption, outcome)
+		if !service.persistent.Adoption.UseAESGCM || service.persistent.Adoption.CfgVersion != "1" || service.reportedCfgVersion != "1" || !outcome.StateChanged {
+			t.Fatalf("confined GCM upgrade mismatch: state=%+v report_cfg=%q outcome=%+v", service.persistent.Adoption, service.reportedCfgVersion, outcome)
 		}
 	})
 
@@ -1200,6 +1442,21 @@ func encodeCBCControllerResponse(t *testing.T, keyHex string, payload []byte) []
 		t.Fatal(err)
 	}
 	return wire
+}
+
+func decodedRequestCfgVersion(t *testing.T, request []byte, keyHex string, mode inform.Mode) string {
+	t.Helper()
+	decoded, err := (inform.Decoder{ExpectedMAC: &gatewayTestMAC, ExpectedMode: &mode}).Decode(request, keyHex)
+	if err != nil {
+		t.Fatalf("decode inform request: %v", err)
+	}
+	var report struct {
+		CfgVersion string `json:"cfgversion"`
+	}
+	if err := json.Unmarshal(decoded.Payload, &report); err != nil {
+		t.Fatalf("decode inform report JSON: %v", err)
+	}
+	return report.CfgVersion
 }
 
 type sequencePoller struct {

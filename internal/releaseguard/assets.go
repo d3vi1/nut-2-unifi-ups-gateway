@@ -18,7 +18,7 @@ const (
 	maxReleaseAssetSize   = 128 << 20
 	maxExpandedBundleSize = 4 << 20
 	maxBundleMemberSize   = 1 << 20
-	composeSHA256         = "4dc8196e818765755bdbc2996f29044f45da6f76b2d224d47898945e4c7b939c"
+	composeSHA256         = "c3f1d8e80c22ae15345769e3029bf317a12fb1b793da08b8962ec27bdd7be883"
 	composeAuthSHA256     = "dff79bb144fc83589d3c4eb0d7a3b73ef25051db9db59ff71273cd606e6f7cfd"
 )
 
@@ -230,6 +230,11 @@ N2U_NUT_ALLOW_INSECURE_REMOTE=false
 # N2U_NUT_PASSWORD_SECRET_FILE=/absolute/path/to/nut_password
 N2U_UNIFI_MODEL=USWDA26
 N2U_UNIFI_VERSION=1.6.1
+# Interoperability experiment for rename-related controller configuration.
+# Whether it clears Getting Ready remains CANDIDATE; it mirrors cfgversion only.
+# It does not promise a Network UI transition.
+# Enable only for authenticated GCM under a non-default key on a trusted LAN.
+N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC=false
 # Experimental: leave false unless a separate, credential-free NUT service was
 # verified from another LAN host at the emulated device IP, served ID, and port.
 N2U_UNIFI_NUT_SERVER_ENABLED=false

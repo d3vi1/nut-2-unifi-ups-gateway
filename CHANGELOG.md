@@ -22,6 +22,12 @@ All notable changes are documented here. The project follows
   `ups.beeper.status` values without adding a buzzer write path.
 - An experimental, default-off, credential-free advertisement for a separately
   verified NUT service at the emulated device IP.
+- A default-off plain-HTTP GCM compatibility option that can mirror only a
+  valid received `cfgversion` in memory after adoption when it is the only
+  non-empty `mgmt_cfg` entry. It is intended to test whether that narrow mirror
+  helps Network reconcile configuration-only changes without granting command
+  authority; exact-build live efficacy remains **CANDIDATE**. Accompanying
+  `system_cfg` remains observed and ignored.
 
 ### Changed
 
@@ -52,10 +58,13 @@ All notable changes are documented here. The project follows
   `N2U_INFORM_INTERVAL` is authoritative, so a captured cadence reply cannot
   regain an effect after restart and routine informs do not wear the state
   volume.
-- After a controller key is installed, all adopted replies over plain HTTP are
-  acknowledgement-only, including authenticated GCM whose envelope cannot prove
-  request freshness. State, reset, key, reboot, upgrade, and cadence effects
-  require trusted HTTPS; a same-key one-way CBC-to-GCM upgrade remains allowed.
+- After a controller key is installed, adopted replies over plain HTTP are
+  acknowledgement-only by default, including authenticated GCM whose envelope
+  cannot prove request freshness. State, reset, key, reboot, upgrade, and
+  cadence effects require trusted HTTPS; a same-key one-way CBC-to-GCM upgrade
+  remains allowed. The explicit volatile-`cfgversion` exception changes only
+  the in-memory report marker: it applies no accompanying configuration and
+  changes neither the state file nor persistent replay nonces.
 - The identity-free health listener now has a shutdown-safe aggregate
   connection cap, disables connection reuse, and retains its time and header
   bounds.

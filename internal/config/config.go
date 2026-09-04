@@ -40,13 +40,14 @@ type NUT struct {
 }
 
 type UniFi struct {
-	Model             string
-	Version           string
-	InformURL         string
-	InformInterval    time.Duration
-	InformTimeout     time.Duration
-	DiscoveryInterval time.Duration
-	NUTServer         NUTServerAdvertisement
+	Model                      string
+	Version                    string
+	InformURL                  string
+	InformInterval             time.Duration
+	InformTimeout              time.Duration
+	DiscoveryInterval          time.Duration
+	VolatileHTTPCfgVersionSync bool
+	NUTServer                  NUTServerAdvertisement
 }
 
 // NUTServerAdvertisement describes an independently verified NUT service at
@@ -129,6 +130,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if c.UniFi.NUTServer.Enabled, err = boolean("N2U_UNIFI_NUT_SERVER_ENABLED", false); err != nil {
+		return Config{}, err
+	}
+	if c.UniFi.VolatileHTTPCfgVersionSync, err = boolean("N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC", false); err != nil {
 		return Config{}, err
 	}
 	if c.UniFi.NUTServer.Port, err = integer("N2U_UNIFI_NUT_SERVER_PORT", 3493, 1, 65535); err != nil {
@@ -323,7 +327,8 @@ var knownEnvironment = map[string]struct{}{
 	"N2U_NUT_ALLOW_INSECURE_REMOTE": {},
 	"N2U_UNIFI_MODEL":               {}, "N2U_UNIFI_VERSION": {}, "N2U_INFORM_URL": {},
 	"N2U_UNIFI_NUT_SERVER_ENABLED": {}, "N2U_UNIFI_NUT_SERVER_ID": {}, "N2U_UNIFI_NUT_SERVER_PORT": {},
-	"N2U_INFORM_INTERVAL": {}, "N2U_INFORM_TIMEOUT": {}, "N2U_DISCOVERY_INTERVAL": {},
+	"N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC": {},
+	"N2U_INFORM_INTERVAL":                         {}, "N2U_INFORM_TIMEOUT": {}, "N2U_DISCOVERY_INTERVAL": {},
 	"N2U_DEVICE_MAC": {}, "N2U_DEVICE_SERIAL": {}, "N2U_DEVICE_HOSTNAME": {}, "N2U_DEVICE_IP": {},
 	"N2U_STATE_FILE": {}, "N2U_HEALTH_ADDRESS": {}, "N2U_POLL_INTERVAL": {}, "N2U_STALE_AFTER": {},
 	"N2U_LOG_LEVEL": {},

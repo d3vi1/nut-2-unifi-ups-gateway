@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -57,13 +58,16 @@ type Gateway struct {
 	informMu      sync.Mutex
 	gcmReplay     gcmReplayWindow
 
-	mu            sync.RWMutex
-	persistent    state.State
-	latest        nut.Snapshot
-	haveLatest    bool
-	upstreamOK    bool
-	lastInform    time.Time
-	nextDiscovery uint32
+	mu         sync.RWMutex
+	persistent state.State
+	// reportedCfgVersion is a report-only compatibility marker. It starts from
+	// persistent adoption state but is never copied back into state.State.
+	reportedCfgVersion string
+	latest             nut.Snapshot
+	haveLatest         bool
+	upstreamOK         bool
+	lastInform         time.Time
+	nextDiscovery      uint32
 }
 
 // ErrControllerResponseReplay is returned after a valid GCM envelope reuses a
@@ -302,20 +306,21 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		return nil, err
 	}
 	gateway := &Gateway{
-		configuration: configuration,
-		poller:        poller,
-		controller:    controller,
-		encoder:       encoder,
-		monitor:       options.Monitor,
-		logger:        options.Logger,
-		network:       network,
-		now:           options.Now,
-		saveState:     options.SaveState,
-		started:       options.Now().UTC(),
-		mac:           mac,
-		persistent:    persistent,
-		gcmReplay:     gcmReplay,
-		nextDiscovery: 1,
+		configuration:      configuration,
+		poller:             poller,
+		controller:         controller,
+		encoder:            encoder,
+		monitor:            options.Monitor,
+		logger:             options.Logger,
+		network:            network,
+		now:                options.Now,
+		saveState:          options.SaveState,
+		started:            options.Now().UTC(),
+		mac:                mac,
+		persistent:         persistent,
+		reportedCfgVersion: persistent.Adoption.CfgVersion,
+		gcmReplay:          gcmReplay,
+		nextDiscovery:      1,
 	}
 	gateway.monitor.SetAdopted(persistent.Adoption.Adopted)
 	return gateway, nil
@@ -360,6 +365,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	haveLatest := g.haveLatest
 	upstreamOK := g.upstreamOK
 	persistent := g.persistent
+	reportedCfgVersion := g.reportedCfgVersion
 	lastInform := g.lastInform
 	g.mu.RUnlock()
 	now := g.now().UTC()
@@ -371,7 +377,9 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	if observation.Availability != model.AvailabilityAvailable {
 		return inform.Outcome{}, errors.New("inform skipped because NUT telemetry is not current")
 	}
-	report := projectPowerDevice(g.configuration, persistent, g.network, g.mac, observation, now, g.started, lastInform)
+	reportState := persistent
+	reportState.Adoption.CfgVersion = reportedCfgVersion
+	report := projectPowerDevice(g.configuration, reportState, g.network, g.mac, observation, now, g.started, lastInform)
 	payload, err := inform.BuildPowerDevicePayload(report)
 	if err != nil {
 		return inform.Outcome{}, err
@@ -425,7 +433,14 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	if err != nil {
 		return inform.Outcome{}, err
 	}
-	confineAdoptedPlainHTTPResponse(currentAdoption, &nextAdoption, &outcome, mode)
+	volatileCfgVersion, hasVolatileCfgVersion := confineAdoptedPlainHTTPResponse(
+		currentAdoption,
+		&nextAdoption,
+		&outcome,
+		mode,
+		g.configuration.UniFi.VolatileHTTPCfgVersionSync,
+		setParamHasOnlyCfgVersion(decoded.Payload),
+	)
 	// Controller-selected cadence has no durable freshness binding that avoids a
 	// state-file write for every ordinary noop. Keep the operator's local interval
 	// authoritative so captured cadence responses are inert across restarts.
@@ -477,6 +492,13 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	}
 	g.mu.Lock()
 	g.persistent = nextPersistent
+	if adoptionChanged {
+		// Every durable transition reanchors the report-only marker, including
+		// auth-key/mode epoch changes and trusted HTTPS cfgversion changes.
+		g.reportedCfgVersion = nextPersistent.Adoption.CfgVersion
+	} else if hasVolatileCfgVersion {
+		g.reportedCfgVersion = volatileCfgVersion
+	}
 	g.lastInform = now
 	g.mu.Unlock()
 	g.gcmReplay = nextReplay
@@ -737,28 +759,46 @@ func adoptionToState(adoption inform.AdoptionState) state.Adoption {
 
 // confineAdoptedPlainHTTPResponse retains the CBC bootstrap transitions needed
 // for adoption while preventing every other adopted response received over
-// plain HTTP from changing persistent state or requesting local effects. GCM
-// authenticates a response's contents but does not bind it to the current
-// request, so a captured or delayed response has only acknowledgement authority
-// without trusted transport. HTTPS retains full response semantics.
-func confineAdoptedPlainHTTPResponse(current inform.AdoptionState, next *inform.AdoptionState, outcome *inform.Outcome, mode inform.Mode) {
+// plain HTTP from changing persistent state or requesting local effects. When
+// explicitly enabled, a non-default-key GCM setparam may return one validated
+// cfgversion for volatile report compatibility only. GCM authenticates a
+// response's contents but does not bind it to the current request, so the
+// compatibility marker is neither persisted nor treated as response authority.
+// HTTPS retains full response semantics.
+func confineAdoptedPlainHTTPResponse(
+	current inform.AdoptionState,
+	next *inform.AdoptionState,
+	outcome *inform.Outcome,
+	mode inform.Mode,
+	allowVolatileCfgVersion bool,
+	hasOnlyCfgVersion bool,
+) (string, bool) {
 	if !current.Adopted {
-		return
+		return "", false
 	}
 	endpoint, err := parseControllerURL(current.InformURL)
 	if err == nil && endpoint.Scheme == "https" {
-		return
+		return "", false
 	}
 	// Some controllers answer the first inform with a noop and provide the
 	// controller key only in a later setparam. That default-key state is still
 	// bootstrap, so permit only the response that actually installs a new key.
 	if mode == inform.ModeCBC && strings.EqualFold(current.AuthKey, inform.DefaultKey) && !strings.EqualFold(next.AuthKey, inform.DefaultKey) {
-		return
+		return "", false
 	}
 
 	// A same-key one-way GCM upgrade is safe to retain: once committed, the
 	// replayed CBC envelope no longer matches the active mode.
 	upgradeToGCM := mode == inform.ModeCBC && next.UseAESGCM && !current.UseAESGCM && strings.EqualFold(next.AuthKey, current.AuthKey)
+	volatileCfgVersion := next.CfgVersion
+	retainVolatileCfgVersion := allowVolatileCfgVersion &&
+		err == nil && endpoint.Scheme == "http" &&
+		mode == inform.ModeGCM && current.UseAESGCM &&
+		!strings.EqualFold(current.AuthKey, inform.DefaultKey) &&
+		outcome.Kind == inform.ResponseSetParam && hasOnlyCfgVersion &&
+		strings.EqualFold(next.AuthKey, current.AuthKey) &&
+		next.InformURL == current.InformURL &&
+		next.UseAESGCM == current.UseAESGCM && next.Adopted == current.Adopted
 	kind := outcome.Kind
 	cycleIntents := outcome.CycleIntents
 	unsupportedSettings := outcome.UnsupportedSettings
@@ -772,4 +812,32 @@ func confineAdoptedPlainHTTPResponse(current inform.AdoptionState, next *inform.
 		next.UseAESGCM = true
 		outcome.StateChanged = true
 	}
+	return volatileCfgVersion, retainVolatileCfgVersion
+}
+
+// setParamHasOnlyCfgVersion is called only after ApplyControllerResponse has
+// accepted the bounded, unique JSON and validated every mgmt_cfg entry. Requiring
+// exactly one non-empty entry prevents the report-only acknowledgement from
+// implying that another known or unknown management setting was applied.
+func setParamHasOnlyCfgVersion(body []byte) bool {
+	var response struct {
+		Type    string `json:"_type"`
+		MgmtCfg string `json:"mgmt_cfg"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil || response.Type != "setparam" {
+		return false
+	}
+	entryCount := 0
+	for _, line := range strings.Split(strings.ReplaceAll(response.MgmtCfg, "\r", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		entryCount++
+		name, _, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(name) != "cfgversion" {
+			return false
+		}
+	}
+	return entryCount == 1
 }

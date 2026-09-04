@@ -25,8 +25,29 @@ func TestLoadDefaults(t *testing.T) {
 	if c.UniFi.NUTServer.Enabled || c.UniFi.NUTServer.ID != "ups" || c.UniFi.NUTServer.Port != 3493 {
 		t.Fatalf("unexpected advertised NUT server defaults: %+v", c.UniFi.NUTServer)
 	}
+	if c.UniFi.VolatileHTTPCfgVersionSync {
+		t.Fatal("volatile HTTP/GCM cfgversion compatibility must default off")
+	}
 	if c.Runtime.HealthAddress != "127.0.0.1:9199" {
 		t.Fatalf("unexpected health default %q", c.Runtime.HealthAddress)
+	}
+}
+
+func TestVolatileHTTPCfgVersionSyncRequiresExplicitBooleanOptIn(t *testing.T) {
+	clearEnvironment(t)
+	t.Setenv("N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC", "true")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.UniFi.VolatileHTTPCfgVersionSync {
+		t.Fatal("explicit volatile HTTP/GCM cfgversion opt-in was not retained")
+	}
+
+	clearEnvironment(t)
+	t.Setenv("N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC", "sometimes")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid volatile HTTP/GCM cfgversion boolean was accepted")
 	}
 }
 

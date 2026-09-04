@@ -1,6 +1,8 @@
 package buildtest
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -51,6 +53,185 @@ func TestProtocolEvidenceKeepsDeploymentObservationsRedacted(t *testing.T) {
 	}
 }
 
+func TestVolatileCfgVersionCompatibilityIsDefaultOffAndBounded(t *testing.T) {
+	const option = "N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC"
+
+	compose := readRepositoryFile(t, "deploy", "synology", "compose.yaml")
+	if !strings.Contains(compose, option+": ${"+option+":-false}") {
+		t.Fatalf("Compose does not pass %s through with a false default", option)
+	}
+	example := readRepositoryFile(t, "deploy", "synology", ".env.example")
+	if !strings.Contains(example, option+"=false") {
+		t.Fatalf("Synology environment example does not keep %s disabled", option)
+	}
+	if !strings.Contains(example, "Whether it clears Getting Ready remains CANDIDATE") ||
+		!strings.Contains(example, "does not promise a Network UI transition") {
+		t.Error("Synology environment example presents the option as established interoperability")
+	}
+
+	configuration := singleSpaced(readRepositoryFile(t, "docs", "configuration.md"))
+	for _, required := range []string{
+		"| `" + option + "` | `false` |",
+		"authenticated GCM `setparam` response",
+		"must contain exactly one non-empty entry: a syntactically valid",
+		"`system_cfg` may accompany that response, but it remains observation-only",
+		"not saved to the state file",
+		"does not provide request-response correlation",
+	} {
+		if !strings.Contains(configuration, required) {
+			t.Errorf("configuration reference is missing compatibility boundary %q", required)
+		}
+	}
+
+	security := singleSpaced(readRepositoryFile(t, "SECURITY.md"))
+	for _, required := range []string{
+		"contains exactly that one non-empty entry",
+		"accompanying `system_cfg` remains observed and ignored",
+		"Persistent replay nonces remain unchanged",
+		"must not be used across an untrusted network",
+	} {
+		if !strings.Contains(security, required) {
+			t.Errorf("security policy is missing compatibility boundary %q", required)
+		}
+	}
+
+	protocol := readRepositoryFile(t, "docs", "protocol-evidence.md")
+	for _, required := range []string{
+		"Eligibility requires `mgmt_cfg` to contain exactly one",
+		"An accompanying `system_cfg` is still observed",
+	} {
+		if !strings.Contains(protocol, required) {
+			t.Errorf("protocol evidence is missing compatibility boundary %q", required)
+		}
+	}
+
+	readme := readRepositoryFile(t, "README.md")
+	if !strings.Contains(readme, "An observed-symptom case is an already-adopted UPS renamed in Network that remains **Getting Ready**") ||
+		!strings.Contains(readme, option+"=true") {
+		t.Error("README troubleshooting does not expose the narrow rename recovery option")
+	}
+	synology := readRepositoryFile(t, "docs", "synology.md")
+	if !strings.Contains(synology, "An observed-symptom case is an adopted UPS renamed in Network that remains **Getting Ready**") ||
+		!strings.Contains(synology, option+"=true") {
+		t.Error("Synology troubleshooting does not expose the narrow rename recovery option")
+	}
+}
+
+func TestVolatileCfgVersionLiveEfficacyRemainsCandidate(t *testing.T) {
+	readme := singleSpaced(readRepositoryFile(t, "README.md"))
+	if !strings.Contains(readme, "Whether it clears **Getting Ready** remains **CANDIDATE** until exact-build live acceptance") {
+		t.Error("README promotes volatile cfgversion sync beyond exact-build live evidence")
+	}
+
+	changelog := singleSpaced(readRepositoryFile(t, "CHANGELOG.md"))
+	if !strings.Contains(changelog, "exact-build live efficacy remains **CANDIDATE**") {
+		t.Error("changelog promotes volatile cfgversion sync beyond exact-build live evidence")
+	}
+	if strings.Contains(changelog, "allowing Network to reconcile configuration-only changes") {
+		t.Error("changelog still claims unvalidated live reconciliation efficacy")
+	}
+	synology := singleSpaced(readRepositoryFile(t, "docs", "synology.md"))
+	if !strings.Contains(synology, "Whether it clears **Getting Ready** remains **CANDIDATE** until exact-build live acceptance") {
+		t.Error("Synology troubleshooting promotes volatile cfgversion sync beyond exact-build live evidence")
+	}
+
+	protocol := singleSpaced(readRepositoryFile(t, "docs", "protocol-evidence.md"))
+	want := "| Volatile plain-HTTP GCM `cfgversion` synchronization | **CANDIDATE**; explicit default-off compatibility option with automated coverage, pending live rename-recovery acceptance |"
+	if !strings.Contains(protocol, want) {
+		t.Error("canonical protocol evidence no longer marks volatile cfgversion sync as CANDIDATE")
+	}
+
+	configuration := singleSpaced(readRepositoryFile(t, "docs", "configuration.md"))
+	if !strings.Contains(configuration, "Whether it clears **Getting Ready** remains **CANDIDATE** until exact-build live acceptance") ||
+		!strings.Contains(configuration, "does not establish any Network UI state transition") {
+		t.Error("configuration guide promotes volatile cfgversion sync beyond exact-build live evidence")
+	}
+	for _, overclaim := range []string{
+		"default-off escape hatch",
+		"before the device leaves **Getting Ready** again",
+	} {
+		if strings.Contains(configuration, overclaim) {
+			t.Errorf("configuration guide retains unvalidated efficacy claim %q", overclaim)
+		}
+	}
+
+	security := singleSpaced(readRepositoryFile(t, "SECURITY.md"))
+	if !strings.Contains(security, "the **CANDIDATE** `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC` interoperability option") ||
+		!strings.Contains(security, "it does not establish that Network will clear **Getting Ready**") {
+		t.Error("security guidance promotes volatile cfgversion sync beyond exact-build live evidence")
+	}
+	if strings.Contains(security, "to work around a controller") {
+		t.Error("security guidance still presents the CANDIDATE option as an established workaround")
+	}
+
+}
+
+func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
+	// These public files jointly define the CANDIDATE evidence boundary. Lock
+	// their exact bytes so every wording change requires an explicit review and
+	// digest update instead of relying on an incomplete natural-language parser.
+	expected := map[string]string{
+		"CHANGELOG.md":                 "8900ba85c65ee77027d4fc46642075bab400af940d18b709359a398780824827",
+		"README.md":                    "7132a56902208e35e182a6d04945d48e489b2d347085216d50c422a342a26026",
+		"SECURITY.md":                  "495309174e37ac59cd9171b2fcc562f7770a7424af8548cb4bc32e05af3ca4f6",
+		"deploy/synology/.env.example": "ad4c68b7e625db3166e4b72d65a4060b913a9ded7e33e320d8ab58706bd454f5",
+		"docs/configuration.md":        "27530e94818f05c97ab6125f84008f89a9da840c0d6425f19dea34fc28248592",
+		"docs/protocol-evidence.md":    "11fc951c238c22dcd8a3cf9d01bb4e3e8232b9bddff199a1050eaf754489efb7",
+		"docs/synology.md":             "99a6e04b2294901df15c9c4b4b711b14f743da3ff25df30b67f37f3b444d089d",
+	}
+	for path, want := range expected {
+		document := readRepositoryFile(t, strings.Split(path, "/")...)
+		got := fmt.Sprintf("%x", sha256.Sum256([]byte(document)))
+		if got != want {
+			t.Errorf("%s changed outside the reviewed cfgversion evidence snapshot: got %s want %s", path, got, want)
+		}
+	}
+}
+
+func TestSynologyUpdateAndRollbackUseVersionMatchedDeploymentSets(t *testing.T) {
+	document := readRepositoryFile(t, "docs", "synology.md")
+	update := singleSpaced(markdownSection(t, document, "## Update", "## Roll back"))
+	rollback := singleSpaced(markdownSection(t, document, "## Roll back", ""))
+
+	for name, section := range map[string]string{"update": update, "rollback": rollback} {
+		for _, required := range []string{
+			"`compose.yaml`",
+			"`compose.auth.yaml`",
+			"digest-pinned `N2U_IMAGE`",
+			"same verified versioned release bundle",
+			"site-owned `.env`",
+			"existing named state volume",
+		} {
+			if !strings.Contains(section, required) {
+				t.Errorf("%s guidance is missing version-matched deployment boundary %q", name, required)
+			}
+		}
+	}
+
+	for _, required := range []string{
+		"protected backup directory",
+		"separate versioned staging directory",
+		"Never pair a new image line with an older `compose.yaml` or `compose.auth.yaml`",
+	} {
+		if !strings.Contains(update, required) {
+			t.Errorf("update guidance is missing staging or backup boundary %q", required)
+		}
+	}
+	for _, required := range []string{
+		"Restore the complete protected prior deployment set",
+		"Never mix either previous Compose file with a different release's image line",
+		"never pass `--volumes`",
+	} {
+		if !strings.Contains(rollback, required) {
+			t.Errorf("rollback guidance is missing restoration boundary %q", required)
+		}
+	}
+
+	if regexp.MustCompile(`(?m)^docker compose[^\n]*--volumes(?:\s|$)`).MatchString(document) {
+		t.Error("Synology guide contains a destructive Compose command with --volumes")
+	}
+}
+
 func evidenceParagraph(t *testing.T, document, prefix string) string {
 	t.Helper()
 	start := strings.Index(document, prefix)
@@ -62,4 +243,24 @@ func evidenceParagraph(t *testing.T, document, prefix string) string {
 		t.Fatalf("protocol evidence paragraph %q has no boundary", prefix)
 	}
 	return document[start : start+end]
+}
+
+func markdownSection(t *testing.T, document, startHeading, endHeading string) string {
+	t.Helper()
+	start := strings.Index(document, startHeading+"\n")
+	if start < 0 {
+		t.Fatalf("document is missing section %q", startHeading)
+	}
+	if endHeading == "" {
+		return document[start:]
+	}
+	end := strings.Index(document[start+len(startHeading):], endHeading+"\n")
+	if end < 0 {
+		t.Fatalf("section %q has no %q boundary", startHeading, endHeading)
+	}
+	return document[start : start+len(startHeading)+end]
+}
+
+func singleSpaced(value string) string {
+	return strings.Join(strings.Fields(value), " ")
 }

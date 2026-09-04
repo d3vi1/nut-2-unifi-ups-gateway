@@ -54,10 +54,24 @@ sticky until `setdefault`; a later `setparam` may rotate the key.
 
 The gateway deliberately narrows those firmware semantics at its trust
 boundary. Controller cadence never changes the local scheduler. After a
-controller key is installed, every plain-HTTP reply is acknowledgement-only:
-GCM proves envelope integrity but not association with the current request. A
-same-key one-way CBC-to-GCM upgrade remains available; all other effectful
-post-adoption replies require trusted HTTPS.
+controller key is installed, every plain-HTTP reply is acknowledgement-only by
+default: GCM proves envelope integrity but not association with the current
+request. A same-key one-way CBC-to-GCM upgrade remains available; all other
+effectful post-adoption replies require trusted HTTPS.
+
+An explicit, default-off compatibility option can mirror a syntactically valid
+`cfgversion` from an authenticated GCM `setparam` after adoption with a
+non-default key. Eligibility requires `mgmt_cfg` to contain exactly one
+non-empty entry, `cfgversion=...`; any additional or unknown `mgmt_cfg` entry
+disables the acknowledgement. An accompanying `system_cfg` is still observed
+and ignored. The value affects only subsequent inform payloads in the running
+process. It does not apply key, URL, mode, cadence, adoption, restart, upgrade,
+relay, or power-control requests; neither the state file nor the persistent
+state-changing replay window is changed. A restart restores the persisted
+marker; any later eligible controller response is evaluated again. This does
+not establish a Network UI transition. Because GCM still does not correlate
+the response to the current request, this exception is suitable only for a
+trusted management LAN.
 
 ## Genuine firmware protocol inventory
 
@@ -262,6 +276,7 @@ remain reference evidence rather than operational claims.
 | Emit the exact `USWDA26` discovery shape | **PROVEN** on wire to the target UDM; registration evidence is build-specific and listed separately |
 | Reach and pass TNBU/JSON/MAC parsing on Network 10.6.101 | **PROVEN**; controller returns unknown-device HTTP 404 |
 | Adopt and pair through `/inform` | **OBSERVED** in a redacted Network 10.6.102 interoperability sample; the older 10.6.101 test remained a 404 |
+| Volatile plain-HTTP GCM `cfgversion` synchronization | **CANDIDATE**; explicit default-off compatibility option with automated coverage, pending live rename-recovery acceptance |
 | Project NUT-observed outlet count, groups, USB type, and meter capability | **CANDIDATE**; automated coverage only, no topology-capable live source acceptance yet |
 | Advertise an independently verified NUT service at the emulated device IP | **CANDIDATE**, explicit opt-in only; default disabled |
 | Trigger UniFi OS shutdown policy from NUT battery state | **BLOCKED_EXTERNAL** until a controlled outage simulation |

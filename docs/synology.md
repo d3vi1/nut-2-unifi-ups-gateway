@@ -278,6 +278,7 @@ renders it for this carrier even when server access is not advertised.
 | Non-loopback NUT is rejected | Set `N2U_NUT_ALLOW_INSECURE_REMOTE=true` only after confining the connection to a trusted LAN or VPN. |
 | UPS never appears in Network | Keep the Synology and console on the management LAN, allow UDP/10001 and TCP/8080, and use the console's explicit `/inform` URL. |
 | Inform remains pending or returns 404 | Confirm `N2U_UNIFI_MODEL=USWDA26`, update Network, and compare the exact build with [protocol evidence](protocol-evidence.md). |
+| An observed-symptom case is an adopted UPS renamed in Network that remains **Getting Ready** | Verify `/readyz` and inform health first. On a trusted management LAN only, `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC=true` is intended to mirror the narrow GCM marker in memory. Whether it clears **Getting Ready** remains **CANDIDATE** until exact-build live acceptance; see [Configuration](configuration.md#plain-http-gcm-cfgversion-compatibility). |
 | Only eight 4+4 outlets appear | The NUT driver supplied no valid `outlet.count`; the default carrier fallback is working as designed. |
 | Outlets 5–8 are marked Surge | Network's `USWDA26` catalog fixes this illustration; it is not derived from NUT or `outlet_caps`. |
 | Power is `<100/0 W` or current is exactly `1.00 A` | Inspect `ups.realpower`/`output.realpower`, their `.nominal` aliases, and `output.current`; missing precision and W values are never invented. |
@@ -298,12 +299,29 @@ Restoring the same volume preserves the UniFi device identity.
 
 ## Update
 
-Read the new release notes and download its versioned Synology bundle and
-checksum into a separate temporary directory. Verify the checksum before
-extracting it, exactly as in the installation procedure. Copy only the new
-digest-pinned `N2U_IMAGE=...@sha256:...` line from the generated `.env` into
-your existing `.env`; retain all site settings and the existing state volume.
-Then inspect the rendered Compose configuration before applying it:
+Treat `compose.yaml`, `compose.auth.yaml`, and the digest-pinned `N2U_IMAGE`
+line as one version-matched deployment set. All three must come from the same
+verified versioned release bundle. Keep that bundle's `RELEASE-METADATA.txt`
+with the set so the image line can be checked against its `Image:` field.
+
+Before changing the running deployment, create a protected backup directory
+and copy the active `compose.yaml`, `compose.auth.yaml`, `.env`, and
+`RELEASE-METADATA.txt` into it. The active `N2U_IMAGE` line must match the
+metadata and Compose files from that same verified versioned release bundle;
+stop and reconstruct that version-matched set if its origin cannot be proved.
+This backup preserves the pre-update site-owned `.env` values. Keep the
+existing named state volume in place.
+
+Download and verify the new bundle and checksum exactly as in the installation
+procedure, then extract it into a separate versioned staging directory—not over
+the active or backup set. Use the new bundle's `.env` as the base. Copy the
+site-owned values from the active `.env` into their corresponding entries, but
+leave the new bundle's exact digest-pinned `N2U_IMAGE` line unchanged. Keep both
+new Compose files together even when authentication is not enabled. Never pair
+a new image line with an older `compose.yaml` or `compose.auth.yaml`.
+
+From the staged versioned directory, inspect the rendered Compose configuration
+before applying it:
 
 ```bash
 docker compose --env-file .env -f compose.yaml config
@@ -315,25 +333,42 @@ docker compose --env-file .env -f compose.yaml ps
 For authenticated NUT, include `-f compose.auth.yaml` in all four commands.
 Never update by pulling `:latest`, re-pulling a previous tag, or downloading
 deployment files from a Git tag. Each upgrade gets its image digest from its
-own verified, immutable GitHub Release bundle.
+own verified, immutable GitHub Release bundle. After health and telemetry are
+confirmed, retain the protected prior deployment set for rollback; the fixed
+Compose project name reuses the existing named state volume.
 
 ## Roll back
 
-Retrieve and verify the previous known-good release bundle, then restore its
-exact digest-pinned `N2U_IMAGE` line and run `pull` plus `up -d`. Do not derive a
-rollback reference from a mutable tag.
-To stop the unauthenticated deployment without deleting identity:
+Restore the complete protected prior deployment set: its `compose.yaml`,
+`compose.auth.yaml`, and digest-pinned `N2U_IMAGE` line must all come from the
+same verified versioned release bundle. Use the backed-up `.env` so the
+pre-update site-owned `.env` values return with that image binding. If the
+backup is unavailable, retrieve and verify the previous bundle, use its `.env`
+as the base, and reapply the separately backed-up site values while leaving its
+exact `N2U_IMAGE` line unchanged. Never mix either previous Compose file with a
+different release's image line.
+
+From the restored prior directory, validate and apply an unauthenticated
+rollback without deleting identity:
 
 ```bash
-docker compose --env-file .env -f compose.yaml down
+docker compose --env-file .env -f compose.yaml config
+docker compose --env-file .env -f compose.yaml pull
+docker compose --env-file .env -f compose.yaml up -d
+docker compose --env-file .env -f compose.yaml ps
 ```
 
-For authenticated NUT:
+For authenticated NUT, use both version-matched Compose files:
 
 ```bash
-docker compose --env-file .env -f compose.yaml -f compose.auth.yaml down
+docker compose --env-file .env -f compose.yaml -f compose.auth.yaml config
+docker compose --env-file .env -f compose.yaml -f compose.auth.yaml pull
+docker compose --env-file .env -f compose.yaml -f compose.auth.yaml up -d
+docker compose --env-file .env -f compose.yaml -f compose.auth.yaml ps
 ```
 
-Do not add `--volumes`. A normal rollback changes neither the upstream NUT
-server nor the controller. Unpair the gateway in Network only when deliberately
-discarding that identity.
+The fixed Compose project name reuses the existing named state volume in both
+directions. Do not delete, recreate, rename, or replace that volume, and never
+pass `--volumes`. A normal rollback changes neither the upstream NUT server nor
+the controller. Unpair the gateway in Network only when deliberately discarding
+that identity.
