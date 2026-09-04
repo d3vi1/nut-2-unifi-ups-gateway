@@ -68,6 +68,13 @@ All notable changes are documented here. The project follows
   A release has no SemVer, `latest`, major, or minor OCI alias; its permanent
   run-scoped registry tag is only a retention anchor, while the immutable
   Release bundle uses the authoritative manifest digest.
+- Fulcio certificate lifetime is evaluated at the authenticated Rekor
+  integration time after the pinned GitHub verifier completes full Sigstore
+  verification. A delayed verifier can no longer reject a valid historical
+  signature merely because its short-lived leaf has since expired; malformed
+  or out-of-lifetime log times still fail closed.
+- The offline attestation verifier runs without GitHub, Actions-runtime, OIDC,
+  or GHCR credentials after its pinned inputs are installed.
 - The release controller runs only by explicit dispatch from the live default
   branch. It atomically reserves the version by creating its protected source
   tag, then creates an owned draft before touching GHCR. The tag created with
@@ -84,6 +91,10 @@ All notable changes are documented here. The project follows
   The controller also validates the exact four-platform OCI index and the
   digest-pinned contents of the Synology archive before publication. Transport,
   schema, authentication, timeout, or partial-state uncertainty fails closed.
+- Public protocol evidence labels site-derived compatibility observations as
+  redacted and omits deployment identities and inventory. Its focused
+  regression rejects dated or counted adoption inventory and any direct
+  `ups.id` assignment in those redacted samples.
 
 ## 0.1.0-alpha.1 - 2026-09-02
 

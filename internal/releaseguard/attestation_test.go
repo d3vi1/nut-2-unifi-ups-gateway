@@ -1,6 +1,7 @@
 package releaseguard
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -23,11 +24,14 @@ import (
 )
 
 type testAttestationOptions struct {
-	mutateStatement  func(*inTotoStatement)
-	mutateClaims     func(map[string]string)
-	certificateURI   string
-	invalidSignature bool
-	omitTLog         bool
+	mutateStatement         func(*inTotoStatement)
+	mutateClaims            func(map[string]string)
+	certificateURI          string
+	invalidSignature        bool
+	omitTLog                bool
+	integratedTime          *string
+	omitIntegratedTime      bool
+	duplicateIntegratedTime bool
 }
 
 func TestVerifyAttestationBundle(t *testing.T) {
@@ -37,6 +41,67 @@ func TestVerifyAttestationBundle(t *testing.T) {
 	bundle := makeTestAttestationBundle(t, release, binding, now, testAttestationOptions{})
 	if err := verifyAttestationBundle(release, binding, bundle, now); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestVerifyAttestationBundleUsesRekorIntegratedTime(t *testing.T) {
+	release := loadTestContext(t, validEnvironment())
+	binding := mustTestBinding(t, release)
+	integratedTime := time.Unix(1_800_000_000, 0).UTC()
+	bundle := makeTestAttestationBundle(t, release, binding, integratedTime, testAttestationOptions{})
+
+	// Fulcio leaves are intentionally short-lived. Historical verification must
+	// use the authenticated Rekor inclusion time, not the later observation time.
+	if err := verifyAttestationBundle(release, binding, bundle, integratedTime.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyAttestationBundleRejectsIntegratedTimeOutsideCertificateValidity(t *testing.T) {
+	release := loadTestContext(t, validEnvironment())
+	binding := mustTestBinding(t, release)
+	certificateTime := time.Unix(1_800_000_000, 0).UTC()
+	tests := []struct {
+		name           string
+		integratedTime time.Time
+		observedAt     time.Time
+	}{
+		{name: "before not-before", integratedTime: certificateTime.Add(-2 * time.Minute), observedAt: certificateTime},
+		{name: "after not-after", integratedTime: certificateTime.Add(2 * time.Minute), observedAt: certificateTime.Add(3 * time.Minute)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encodedTime := strconv.FormatInt(test.integratedTime.Unix(), 10)
+			bundle := makeTestAttestationBundle(t, release, binding, certificateTime, testAttestationOptions{integratedTime: &encodedTime})
+			if err := verifyAttestationBundle(release, binding, bundle, test.observedAt); err == nil {
+				t.Fatal("attestation with an out-of-validity integrated time unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+func TestVerifyAttestationBundleIntegratedTimeFailsClosed(t *testing.T) {
+	release := loadTestContext(t, validEnvironment())
+	binding := mustTestBinding(t, release)
+	now := time.Unix(1_800_000_000, 0).UTC()
+	malformed := "not-an-integer"
+	negative := "-1"
+	tests := []struct {
+		name    string
+		options testAttestationOptions
+	}{
+		{name: "malformed", options: testAttestationOptions{integratedTime: &malformed}},
+		{name: "missing", options: testAttestationOptions{omitIntegratedTime: true}},
+		{name: "negative", options: testAttestationOptions{integratedTime: &negative}},
+		{name: "duplicate", options: testAttestationOptions{duplicateIntegratedTime: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bundle := makeTestAttestationBundle(t, release, binding, now, test.options)
+			if err := verifyAttestationBundle(release, binding, bundle, now); err == nil {
+				t.Fatal("attestation with an invalid integrated time unexpectedly succeeded")
+			}
+		})
 	}
 }
 
@@ -192,17 +257,38 @@ func makeTestAttestationBundle(t *testing.T, release Context, binding bindingInp
 	if err != nil {
 		t.Fatal(err)
 	}
-	tlogEntries := []any{map[string]any{
+	integratedTime := strconv.FormatInt(now.Unix(), 10)
+	if options.integratedTime != nil {
+		integratedTime = *options.integratedTime
+	}
+	tlogEntry := map[string]any{
 		"logIndex":       "7",
 		"logId":          map[string]string{"keyId": base64.StdEncoding.EncodeToString(make([]byte, sha256.Size))},
 		"kindVersion":    map[string]string{"kind": "dsse", "version": "0.0.1"},
-		"integratedTime": strconv.FormatInt(now.Unix(), 10),
+		"integratedTime": integratedTime,
 		"inclusionProof": map[string]any{
 			"logIndex": "7", "rootHash": base64.StdEncoding.EncodeToString(make([]byte, sha256.Size)),
 			"treeSize": "8", "hashes": []string{}, "checkpoint": map[string]string{"envelope": "rekor.example - 1\n8\nroot\n"},
 		},
 		"canonicalizedBody": base64.StdEncoding.EncodeToString(rekorBody),
-	}}
+	}
+	if options.omitIntegratedTime {
+		delete(tlogEntry, "integratedTime")
+	}
+	tlogEntryJSON, err := json.Marshal(tlogEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.duplicateIntegratedTime {
+		needle := []byte(`"integratedTime":"` + integratedTime + `"`)
+		replacement := []byte(`"integratedTime":"` + integratedTime + `","integratedTime":"` + integratedTime + `"`)
+		withDuplicate := bytes.Replace(tlogEntryJSON, needle, replacement, 1)
+		if bytes.Equal(withDuplicate, tlogEntryJSON) {
+			t.Fatal("test fixture did not contain integratedTime")
+		}
+		tlogEntryJSON = withDuplicate
+	}
+	tlogEntries := []json.RawMessage{tlogEntryJSON}
 	if options.omitTLog {
 		tlogEntries = nil
 	}

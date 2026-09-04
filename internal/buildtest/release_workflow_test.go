@@ -136,15 +136,50 @@ func TestReleaseImageHasNoVersionAliasAndUsesPermanentUniqueAnchor(t *testing.T)
 	}
 
 	attest := strings.Index(image, "Attest the published image digest")
+	logout := strings.Index(image, "Remove the GHCR publication credential")
+	installVerifier := strings.Index(image, "Install the pinned GitHub attestation verifier")
 	verifyRoots := strings.Index(image, "Verify attestation roots and exact workflow identity")
 	verify := strings.Index(image, "Verify exact attestation semantics and remote bindings")
 	export := strings.Index(image, "Export bound publication identity")
-	if attest < 0 || verifyRoots <= attest || verify <= verifyRoots || export <= verify {
+	if attest < 0 || logout <= attest || installVerifier <= logout || verifyRoots <= installVerifier || verify <= verifyRoots || export <= verify {
 		t.Fatal("release identity is exported before its attestation bundle is verified")
+	}
+	credentialRemovalStep := image[logout:installVerifier]
+	for _, want := range []string{
+		"docker logout ghcr.io",
+		`[[ ! -f "$docker_config_file" ]]`,
+		`(has("ghcr.io") | not)`,
+		`[[ ! -x "$DOCKER_CONFIG/cli-plugins/docker-buildx" ]]`,
+	} {
+		if !strings.Contains(credentialRemovalStep, want) {
+			t.Errorf("GHCR credential removal is missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		`rm -rf "$DOCKER_CONFIG"`,
+		`rm -f "$DOCKER_CONFIG/config.json"`,
+	} {
+		if strings.Contains(credentialRemovalStep, forbidden) {
+			t.Errorf("GHCR credential removal destroys dedicated Docker state with %q", forbidden)
+		}
+	}
+	verifierInstallStep := image[installVerifier:verifyRoots]
+	for _, want := range []string{
+		"unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN",
+		"unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_CACHE_URL ACTIONS_RESULTS_URL",
+	} {
+		if !strings.Contains(verifierInstallStep, want) {
+			t.Errorf("attestation verifier installation retains a publication credential: missing %q", want)
+		}
 	}
 	rootVerificationStep := image[verifyRoots:verify]
 	for _, want := range []string{
 		"unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN",
+		"unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_CACHE_URL ACTIONS_RESULTS_URL",
+		`install -d -m 0700 "$verifier_home"`,
+		"/usr/bin/env -i",
+		`HOME="$verifier_home"`,
+		"PATH=/usr/bin:/bin",
 		"--digest-alg sha256",
 		"--repo d3vi1/nut-2-unifi-ups-gateway",
 		"--bundle \"$N2U_ATTESTATION_BUNDLE\"",

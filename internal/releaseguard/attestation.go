@@ -27,6 +27,7 @@ const (
 	maxAttestationPayload     = 1 << 20
 	maxAttestationCertificate = 32 << 10
 	maxAttestationSignature   = 4 << 10
+	maxAttestationFutureSkew  = 5 * time.Minute
 
 	sigstoreBundleMediaType = "application/vnd.dev.sigstore.bundle.v0.3+json"
 	dssePayloadType         = "application/vnd.in-toto+json"
@@ -171,8 +172,9 @@ type rekorDSSEBody struct {
 // actions/attest step, then repeats the remote tag, policy, and OCI checks. The
 // local verification proves that the DSSE payload was signed by the included
 // Fulcio-shaped certificate and binds the exact provenance fields. Trust in the
-// Fulcio root and Rekor checkpoint remains provided by the pinned action which
-// persisted this same bundle; this intentionally small helper does not embed a
+// Fulcio root and Rekor checkpoint is provided by the immediately preceding
+// pinned gh attestation verification over this same bundle and the pinned
+// custom Sigstore root; this intentionally small helper does not embed a
 // rotating Sigstore trust root.
 func (g *Guard) VerifyAttestation(ctx context.Context, release Context, getenv func(string) string) error {
 	releaseID, err := loadReleaseID(getenv)
@@ -254,10 +256,6 @@ func verifyAttestationBundle(release Context, binding bindingInput, payload []by
 	if err != nil {
 		return errors.New("attestation certificate is invalid")
 	}
-	if err := verifyAttestationCertificate(certificate, release, now); err != nil {
-		return err
-	}
-
 	envelope := bundle.DSSEEnvelope
 	if envelope.Payload == nil || envelope.PayloadType == nil || *envelope.PayloadType != dssePayloadType || envelope.Signatures == nil || len(*envelope.Signatures) != 1 {
 		return errors.New("attestation DSSE envelope is invalid")
@@ -280,7 +278,14 @@ func verifyAttestationBundle(release Context, binding bindingInput, payload []by
 	if err := verifyProvenanceStatement(release, binding, statementJSON); err != nil {
 		return err
 	}
-	if err := verifyTransparencyEntry((*material.TLogEntries)[0], certificateDER, statementJSON, *signatureEntry.Sig); err != nil {
+	integratedTime, err := verifyTransparencyEntry((*material.TLogEntries)[0], certificateDER, statementJSON, *signatureEntry.Sig)
+	if err != nil {
+		return err
+	}
+	if now.IsZero() || integratedTime.After(now.Add(maxAttestationFutureSkew)) {
+		return errors.New("attestation transparency log time is after the permitted observation window")
+	}
+	if err := verifyAttestationCertificate(certificate, release, integratedTime); err != nil {
 		return err
 	}
 	return nil
@@ -400,7 +405,25 @@ func verifyProvenanceStatement(release Context, binding bindingInput, payload []
 	return nil
 }
 
-func verifyTransparencyEntry(raw json.RawMessage, certificateDER, payload []byte, signatureBase64 string) error {
+// verifyTransparencyEntry returns integratedTime only after all local Rekor
+// entry bindings have been validated. The preceding pinned gh verifier
+// authenticates the same entry's inclusion proof and checkpoint.
+func verifyTransparencyEntry(raw json.RawMessage, certificateDER, payload []byte, signatureBase64 string) (time.Time, error) {
+	if err := verifyTransparencyEntryBindings(raw, certificateDER, payload, signatureBase64); err != nil {
+		return time.Time{}, err
+	}
+	var entry transparencyLogEntry
+	if err := decodeJSON(raw, &entry); err != nil || entry.IntegratedTime == nil {
+		return time.Time{}, errors.New("attestation transparency log entry is malformed")
+	}
+	integratedUnix, err := parsePositiveInt64(*entry.IntegratedTime, "transparency log integrated time")
+	if err != nil {
+		return time.Time{}, errors.New("attestation transparency log time is invalid")
+	}
+	return time.Unix(integratedUnix, 0).UTC(), nil
+}
+
+func verifyTransparencyEntryBindings(raw json.RawMessage, certificateDER, payload []byte, signatureBase64 string) error {
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 		return errors.New("attestation transparency log entry is missing")
 	}

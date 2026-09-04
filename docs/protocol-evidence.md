@@ -108,11 +108,13 @@ That controller's catalogs contained the `USWDA26`/`0xDA26` definition and exact
 `1.6.1.413` firmware. The result is retained as historical evidence about that
 build, not a claim about every Network release.
 
-On 2026-09-03, Network 10.6.102 on UniFi OS 5.1.31 showed the gateway-projected UPS
-as adopted and showed safe-shutdown pairing with one NVR and one gateway. This
-is **OBSERVED** UI evidence of registration and pairing state. It does not by
-itself prove which private dispatch condition changed, demonstrate a completed
-shutdown, or validate the new dynamic-topology projection.
+A redacted interoperability observation on Network 10.6.102 with UniFi OS
+5.1.31 showed the gateway-projected UPS as adopted and safe-shutdown pairing
+with eligible managed consoles. This is **OBSERVED** UI evidence of registration
+and pairing state. It does not by itself prove which private dispatch condition
+changed, demonstrate a completed shutdown, or validate the new
+dynamic-topology projection. Device counts, names, and site identity are
+intentionally omitted.
 
 A literal `model="NUTUPS"` is not emitted. No such model is present in the
 examined stock registry, and the exact controller's unknown-device path rejects
@@ -131,8 +133,9 @@ established:
   budget becomes zero, and output below the model's 100 W display floor becomes
   the `<100` range seen in the UI.
 - The details panel formats `device_output_current` to two decimals but does not
-  create it. On the live Synology source, `output.current=1.00` is the exact
-  precision exposed by the APC `snmp-ups` driver.
+  create it. In a redacted APC/Synology interoperability sample,
+  `output.current=1.00` was the exact precision exposed by the `snmp-ups`
+  driver.
 - Device `smart_power_caps` bit `0x2` gates **Power Cycle on Restore**, bit `0x4`
   gates **Power-Off Buzzer**, bit `0x8` gates safe-shutdown/cycle timing, and bit
   `0x10` gates EPO. This namespace is separate from `outlet_caps`, where
@@ -141,13 +144,16 @@ established:
   `credential_required`, `username`, and `password`. Its ID is the UPS name
   served by NUT protocol `LIST UPS`, not the opaque telemetry variable `ups.id`.
 
-The current site provided additional **OBSERVED** read-only evidence: the NUT
-service was reachable from the controller host at the emulated device address
-on TCP/3493 and `LIST UPS` returned the served name `ups`; the separate
-`ups.id` value was `UPS-Rack`. This proves that one deployment can truthfully
-opt in to an `ups:3493` advertisement. It does not prove that every local or
-remote NUT source is reachable at the emulated device address, nor that Network
-accepts a device-originated `nut_server` object without provisioning feedback.
+A redacted same-host Synology/Network sample provided additional **OBSERVED**
+read-only evidence: the NUT service was reachable from the controller host at
+the emulated device address on TCP/3493, and `LIST UPS` returned one served UPS
+name. The separate opaque `ups.id` value differed from that served name. This
+proves that one deployment can truthfully opt in to advertising its exact
+served name on port 3493. Documentation and examples use the explicitly
+synthetic served name `ups`; operators must replace it when `LIST UPS` reports a
+different value. The observation does not prove that every local or remote NUT
+source is reachable at the emulated device address, nor that Network accepts a
+device-originated `nut_server` object without provisioning feedback.
 
 ## Dynamic NUT outlet topology
 
@@ -247,7 +253,7 @@ remain reference evidence rather than operational claims.
 | Encode/decode uncompressed TNBU v0 CBC and GCM packets | **PROVEN** by exact-firmware analysis and codec tests; live controller acceptance tracked separately |
 | Emit the exact `USWDA26` discovery shape | **PROVEN** on wire to the target UDM; registration evidence is build-specific and listed separately |
 | Reach and pass TNBU/JSON/MAC parsing on Network 10.6.101 | **PROVEN**; controller returns unknown-device HTTP 404 |
-| Adopt and pair through `/inform` | **OBSERVED** in the 2026-09-03 UI on the then-current configuration; the older 10.6.101 test remained a 404 |
+| Adopt and pair through `/inform` | **OBSERVED** in a redacted Network 10.6.102 interoperability sample; the older 10.6.101 test remained a 404 |
 | Project NUT-observed outlet count, groups, USB type, and meter capability | **CANDIDATE**; automated coverage only, no topology-capable live source acceptance yet |
 | Advertise an independently verified NUT service at the emulated device IP | **CANDIDATE**, explicit opt-in only; default disabled |
 | Trigger UniFi OS shutdown policy from NUT battery state | **BLOCKED_EXTERNAL** until a controlled outage simulation |
