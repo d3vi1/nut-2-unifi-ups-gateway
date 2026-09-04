@@ -146,6 +146,15 @@ capabilities. The carrier affects only this fallback; valid observed NUT
 topology remains carrier-independent. The dynamic projection is experimental
 and remains **CANDIDATE** until accepted live with a topology-capable driver.
 
+NUT may publish a bounded `outlet.group.count` table while omitting
+`outlet.count`. The gateway retains valid group IDs, names, types, optional
+counts, status, and switchability as a separate partial native observation.
+Because no membership is known, those rows are not overlaid on the carrier
+fallback, do not set `TopologyObserved`, do not create a group-to-outlet map,
+and cannot add relay state or capabilities to an inform payload. This is the
+expected interpretation of a PowerNet group table that has no per-outlet
+membership evidence.
+
 All relay groups are descriptive in gateway v1. The process has no NUT command
 method; controller relay requests are ignored and cannot switch the upstream
 UPS. Rows in a shared group report a consistent relay state. A directly matched
@@ -159,12 +168,26 @@ including proposed control/command settings, are rejected.
 | NUT fact | UniFi projection |
 |---|---|
 | `output.current` | `device_output_current`, preserving the precision supplied by the NUT driver |
-| `ups.realpower` | `device_total_power_output` in watts |
-| `ups.realpower.nominal` | `device_total_power_budget` in watts |
-| `ups.power` / `ups.power.nominal` | Not projected as watts; these values are apparent power in VA |
+| `ups.realpower`, then `output.realpower` | `device_total_power_output` in watts |
+| `ups.realpower.nominal`, then `output.realpower.nominal` | `device_total_power_budget` in watts; nominal zero is invalid |
+| `ups.power`, then `output.power` | Retained as apparent power in VA; never projected as watts |
+| `ups.power.nominal`, then `output.power.nominal` | Retained as nominal apparent power in VA; never projected as watts; nominal zero is invalid |
+| `output.powerfactor` | Direct power factor in the closed interval 0–1 |
+| absent direct power factor plus valid same-snapshot W and VA | Derived `W / VA` only when `VA > 0` and `0 <= W <= VA` |
 | `ups.load` | Retained as load percentage, never fabricated into W without direct real-power evidence |
+| `battery.charger.status=charging` | Charging `true` |
+| `battery.charger.status=discharging/floating/resting` | Charging `false` |
+| absent modern charger status plus `CHRG` | Legacy charging `true` |
+| absent modern charger status plus `DISCHRG` | Legacy charging `false` |
+| no modern status, `CHRG`, or `DISCHRG` | Charging remains unknown and is omitted |
 | `ups.beeper.status=enabled/disabled` | Preserved as the matching boolean observation |
 | `ups.beeper.status=muted` | Preserved internally but omitted from UniFi's lossy boolean field |
+
+Alias resolution is fail-closed. Equal numeric aliases are accepted with the
+listed precedence; differing valid aliases, any present malformed alias,
+malformed direct power factor, or contradictory modern/legacy charger evidence
+leave the affected value unknown. The gateway does not derive watts from VA,
+power factor, load, or voltage multiplied by current.
 
 The effective gateway `smart_power_caps` is a fail-closed allowlist inside the
 carrier mask. It advertises only safe-shutdown timing (`0x08`), plus NUT

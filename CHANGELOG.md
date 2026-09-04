@@ -14,8 +14,12 @@ All notable changes are documented here. The project follows
   direct outlet-scoped NUT facts, without treating voltage or power factor
   alone as proof of a power meter. NUT switchability is retained as descriptive
   topology but does not advertise a writable `HAS_RELAY` bit.
-- Unit-preserving UPS-wide mapping for `ups.realpower.nominal` and preservation
-  of standard `ups.beeper.status` values without adding a buzzer write path.
+- Fail-closed W/VA alias resolution, same-snapshot power-factor derivation, and
+  modern `battery.charger.status` reconciliation with legacy status tokens.
+- A bounded partial native group table for `outlet.group.*` observations that
+  have no `outlet.count`, without overlaying those groups on carrier outlets.
+- Unit-preserving UPS-wide mapping and preservation of standard
+  `ups.beeper.status` values without adding a buzzer write path.
 - An experimental, default-off, credential-free advertisement for a separately
   verified NUT service at the emulated device IP.
 

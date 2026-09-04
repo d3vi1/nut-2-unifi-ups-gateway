@@ -179,6 +179,11 @@ conservatively:
   current, real-power, or apparent-power data.
 - UPS-wide and group-wide totals are never divided into invented per-outlet
   readings.
+- A native `outlet.group.*` table without `outlet.count` is retained only as
+  partial NUT evidence. It never changes the carrier fallback, assigns its
+  rows to fallback outlets, or supplies relay state or writable capabilities.
+  In particular, a PowerNet group table does not prove physical outlet
+  membership.
 
 If NUT exposes no valid outlet topology, the selected carrier supplies a stable
 AC-compatible layout only: `USWDA26` presents eight outlets in two groups of
@@ -198,11 +203,18 @@ Some parts of the panel belong to the selected carrier rather than to NUT:
   carrier.
 - **Current** is the exact `output.current` value supplied by NUT. If a driver
   reports integer amperes, the gateway cannot recover the lost precision.
-- Power utilization uses direct `ups.realpower` and
-  `ups.realpower.nominal` values, both in watts. Apparent VA, load percentage,
-  and `voltage × current` are not relabeled as real power. Network may display
-  its awkward `<100/0 W` fallback when the NUT driver supplies neither watt
-  value.
+- Power utilization accepts the standard watt aliases `ups.realpower` then
+  `output.realpower`, and their `.nominal` forms, without mixing units.
+  `ups.power`/`output.power` remain apparent VA. When direct
+  `output.powerfactor` is absent, a valid same-snapshot W/VA pair may supply
+  power factor; VA, load percentage, and `voltage × current` are never
+  relabeled as watts. Conflicting aliases or malformed alias evidence are
+  omitted rather than guessed.
+- `battery.charger.status` is the preferred charging-state evidence. Its
+  `charging`, `discharging`, `floating`, and `resting` values are reconciled
+  with legacy `CHRG`/`DISCHRG` status tokens; absent, malformed, or
+  contradictory evidence stays unknown instead of becoming an implicit
+  “not charging.”
 - **Power Cycle on Restore** is not NUT `AUTO_RELAY`. NUT has no exact persistent
   equivalent, so this writable control is not advertised in v0.9.0.
 - Exact `enabled` or `disabled` values from `ups.beeper.status` are preserved as
@@ -220,7 +232,7 @@ Some parts of the panel belong to the selected carrier rather than to NUT:
 | Inform stays pending or returns 404 | Confirm `N2U_UNIFI_MODEL=USWDA26`, update Network, and review the build-specific evidence in [Protocol evidence](docs/protocol-evidence.md). |
 | Only the 4+4 fallback appears | The NUT driver probably publishes no `outlet.*` variables; this is expected, not fabricated topology evidence. |
 | Outlets 5–8 say Surge or blue Surge In/Out jacks appear | This is the static `USWDA26` illustration, not NUT topology or telemetry. |
-| Power shows `<100/0 W` or current is a round number | Check `ups.realpower`, `ups.realpower.nominal`, and `output.current` in `upsc`; the gateway does not invent missing precision or convert VA to W. |
+| Power shows `<100/0 W` or current is a round number | Check `ups.realpower`/`output.realpower`, their `.nominal` aliases, and `output.current` in `upsc`; the gateway does not invent missing precision or convert VA to W. |
 | NUT Server is unchecked | Expected by default. Enable the experimental advertisement only after proving a separate NUT service is reachable at the emulated device IP. |
 | A UniFi power button does nothing | Expected: controller relay requests are parsed and ignored. This gateway is read-only. |
 | A recreated container appears as a new UPS | Restore the original `state` volume. Deleting it intentionally creates a new UniFi identity. |

@@ -2,6 +2,8 @@ package model
 
 import (
 	"fmt"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,7 +60,7 @@ func TestFromSnapshotMapsFreshTelemetryAndFallbackTopology(t *testing.T) {
 	if got := state.Groups[1].OutletIndices; !equalInts(got, []int{5, 6, 7, 8}) {
 		t.Fatalf("group 2 outlet indices = %v", got)
 	}
-	if state.Groups[0].RelayState != RelayOn || state.Groups[1].RelayState != RelayOff {
+	if state.Groups[0].RelayState != RelayOn || state.Groups[1].RelayState != RelayUnknown {
 		t.Fatalf("unexpected group relay states: %+v", state.Groups)
 	}
 	if state.Outlets[0].Name != "NVR" || !state.Outlets[0].NameObserved {
@@ -152,8 +154,7 @@ func TestStaleUnavailableAndConflictingStateAreExplicit(t *testing.T) {
 				Variables:   map[string]string{"ups.status": "OL CHRG DISCHRG"},
 				CollectedAt: now,
 			},
-			availability: AvailabilityUnavailable,
-			reason:       "conflicting-charge-status",
+			availability: AvailabilityAvailable,
 		},
 	}
 	for _, test := range tests {
@@ -260,6 +261,242 @@ func TestMalformedNominalRealPowerRemainsUnknown(t *testing.T) {
 	}
 }
 
+func TestApparentPowerVoltageCurrentAndLoadDoNotInventWatts(t *testing.T) {
+	now := time.Now().UTC()
+	state := FromSnapshot(nut.Snapshot{
+		Variables: map[string]string{
+			"ups.status":        "OL",
+			"output.voltage":    "233.1",
+			"output.current":    "1",
+			"ups.load":          "44",
+			"ups.power":         "234",
+			"ups.power.nominal": "1500",
+		},
+		CollectedAt: now,
+	}, Options{Now: now})
+
+	if state.Electrical.OutputPowerW.Known || state.Electrical.OutputPowerNominalW.Known {
+		t.Fatalf("VA, voltage, current, or load invented watts: %+v", state.Electrical)
+	}
+	if !state.Electrical.OutputApparentPowerVA.Known || state.Electrical.OutputApparentPowerVA.Value != 234 ||
+		!state.Electrical.OutputApparentPowerNominalVA.Known || state.Electrical.OutputApparentPowerNominalVA.Value != 1500 {
+		t.Fatalf("canonical VA evidence was not retained: %+v", state.Electrical)
+	}
+}
+
+func TestElectricalPowerAliasesResolveFailClosed(t *testing.T) {
+	now := time.Now().UTC()
+	type aliasField struct {
+		name        string
+		primary     string
+		alternate   string
+		allowZero   bool
+		measurement func(State) Measurement
+	}
+	fields := []aliasField{
+		{name: "actual watts", primary: "ups.realpower", alternate: "output.realpower", allowZero: true, measurement: func(state State) Measurement { return state.Electrical.OutputPowerW }},
+		{name: "nominal watts", primary: "ups.realpower.nominal", alternate: "output.realpower.nominal", measurement: func(state State) Measurement { return state.Electrical.OutputPowerNominalW }},
+		{name: "actual volt-amperes", primary: "ups.power", alternate: "output.power", allowZero: true, measurement: func(state State) Measurement { return state.Electrical.OutputApparentPowerVA }},
+		{name: "nominal volt-amperes", primary: "ups.power.nominal", alternate: "output.power.nominal", measurement: func(state State) Measurement { return state.Electrical.OutputApparentPowerNominalVA }},
+	}
+	tests := []struct {
+		name              string
+		primary           string
+		alternate         string
+		wantKnown         bool
+		wantValue         float64
+		wantIssueFor      string
+		wantConflictIssue bool
+	}{
+		{name: "primary only", primary: "104", wantKnown: true, wantValue: 104},
+		{name: "alternate only", alternate: "104", wantKnown: true, wantValue: 104},
+		{name: "equal numeric aliases", primary: "104", alternate: "104.0", wantKnown: true, wantValue: 104},
+		{name: "conflicting aliases", primary: "104", alternate: "234", wantConflictIssue: true},
+		{name: "malformed primary blocks alternate", primary: "invalid", alternate: "104", wantIssueFor: "primary"},
+		{name: "malformed alternate blocks primary", primary: "104", alternate: "invalid", wantIssueFor: "alternate"},
+		{name: "blank primary blocks alternate", primary: " ", alternate: "104", wantIssueFor: "primary"},
+		{name: "negative", primary: "-1", wantIssueFor: "primary"},
+		{name: "zero", primary: "0"},
+	}
+
+	for _, field := range fields {
+		field := field
+		for _, test := range tests {
+			test := test
+			t.Run(field.name+"/"+test.name, func(t *testing.T) {
+				variables := map[string]string{"ups.status": "OL"}
+				if test.primary != "" {
+					variables[field.primary] = test.primary
+				}
+				if test.alternate != "" {
+					variables[field.alternate] = test.alternate
+				}
+				state := FromSnapshot(nut.Snapshot{Variables: variables, CollectedAt: now}, Options{Now: now})
+				got := field.measurement(state)
+				wantKnown := test.wantKnown
+				if test.name == "zero" {
+					wantKnown = field.allowZero
+				}
+				if got.Known != wantKnown || (wantKnown && got.Value != test.wantValue) {
+					t.Fatalf("measurement = %+v, want known=%t value=%v; issues=%v", got, wantKnown, test.wantValue, state.Issues)
+				}
+				if test.wantConflictIssue {
+					want := "conflicting-" + strings.ReplaceAll(field.primary, ".", "-")
+					if !containsIssue(state.Issues, want) {
+						t.Fatalf("conflicting aliases lacked %q: %v", want, state.Issues)
+					}
+				}
+				if test.wantIssueFor != "" || (test.name == "zero" && !field.allowZero) {
+					key := field.primary
+					if test.wantIssueFor == "alternate" {
+						key = field.alternate
+					}
+					want := "invalid-" + strings.ReplaceAll(key, ".", "-")
+					if !containsIssue(state.Issues, want) {
+						t.Fatalf("invalid alias lacked %q: %v", want, state.Issues)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestOutputPowerFactorUsesDirectOrSameSnapshotPower(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name      string
+		variables map[string]string
+		wantKnown bool
+		wantValue float64
+		wantIssue string
+	}{
+		{
+			name: "direct has priority",
+			variables: map[string]string{
+				"output.powerfactor": "0.8",
+				"ups.realpower":      "104",
+				"ups.power":          "234",
+			},
+			wantKnown: true,
+			wantValue: 0.8,
+		},
+		{
+			name:      "direct zero boundary",
+			variables: map[string]string{"output.powerfactor": "0"},
+			wantKnown: true,
+			wantValue: 0,
+		},
+		{
+			name:      "direct one boundary",
+			variables: map[string]string{"output.powerfactor": "1"},
+			wantKnown: true,
+			wantValue: 1,
+		},
+		{
+			name: "derive from canonical 104 W and 234 VA",
+			variables: map[string]string{
+				"ups.realpower": "104",
+				"ups.power":     "234",
+			},
+			wantKnown: true,
+			wantValue: 104.0 / 234.0,
+		},
+		{
+			name: "equal watts and volt-amperes derive one",
+			variables: map[string]string{
+				"ups.realpower": "234",
+				"ups.power":     "234",
+			},
+			wantKnown: true,
+			wantValue: 1,
+		},
+		{
+			name: "derive from alternate aliases",
+			variables: map[string]string{
+				"output.realpower": "104",
+				"output.power":     "234",
+			},
+			wantKnown: true,
+			wantValue: 104.0 / 234.0,
+		},
+		{
+			name: "zero watts is a valid ratio",
+			variables: map[string]string{
+				"ups.realpower": "0",
+				"ups.power":     "234",
+			},
+			wantKnown: true,
+			wantValue: 0,
+		},
+		{
+			name: "zero apparent power leaves ratio unknown",
+			variables: map[string]string{
+				"ups.realpower": "0",
+				"ups.power":     "0",
+			},
+		},
+		{
+			name: "watts above volt-amperes fail closed",
+			variables: map[string]string{
+				"ups.realpower": "235",
+				"ups.power":     "234",
+			},
+			wantIssue: "invalid-derived-output-powerfactor",
+		},
+		{
+			name: "malformed direct value blocks derivation",
+			variables: map[string]string{
+				"output.powerfactor": "malformed",
+				"ups.realpower":      "104",
+				"ups.power":          "234",
+			},
+			wantIssue: "invalid-output-powerfactor",
+		},
+		{
+			name: "direct value above one is invalid",
+			variables: map[string]string{
+				"output.powerfactor": "1.01",
+			},
+			wantIssue: "invalid-output-powerfactor",
+		},
+		{
+			name: "negative direct value is invalid",
+			variables: map[string]string{
+				"output.powerfactor": "-0.01",
+			},
+			wantIssue: "invalid-output-powerfactor",
+		},
+		{
+			name: "nominal power does not derive actual factor",
+			variables: map[string]string{
+				"ups.realpower.nominal": "1000",
+				"ups.power.nominal":     "1500",
+			},
+		},
+		{
+			name: "voltage current and load do not derive factor",
+			variables: map[string]string{
+				"output.voltage": "234",
+				"output.current": "1",
+				"ups.load":       "44",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.variables["ups.status"] = "OL"
+			state := FromSnapshot(nut.Snapshot{Variables: test.variables, CollectedAt: now}, Options{Now: now})
+			got := state.Electrical.OutputPowerFactor
+			if got.Known != test.wantKnown || (test.wantKnown && math.Abs(got.Value-test.wantValue) > 1e-12) {
+				t.Fatalf("power factor = %+v, want known=%t value=%v; issues=%v", got, test.wantKnown, test.wantValue, state.Issues)
+			}
+			if test.wantIssue != "" && !containsIssue(state.Issues, test.wantIssue) {
+				t.Fatalf("missing issue %q: %v", test.wantIssue, state.Issues)
+			}
+		})
+	}
+}
+
 func TestBeeperStatusPreservesOnlyStandardTokens(t *testing.T) {
 	now := time.Now().UTC()
 	tests := []struct {
@@ -323,6 +560,81 @@ func TestAbsentAndMalformedBeeperStatusRemainUnknown(t *testing.T) {
 	}
 }
 
+func TestBatteryChargerStatusPrecedenceAndContradictions(t *testing.T) {
+	now := time.Now().UTC()
+	unknown := Truth{}
+	knownTrue := Truth{Value: true, Known: true}
+	knownFalse := Truth{Value: false, Known: true}
+	tests := []struct {
+		name            string
+		upsStatus       string
+		modern          *string
+		wantCharging    Truth
+		wantDischarging Truth
+		wantIssue       string
+	}{
+		{name: "no charger evidence", upsStatus: "OL", wantCharging: unknown, wantDischarging: unknown},
+		{name: "legacy charging", upsStatus: "OL CHRG", wantCharging: knownTrue, wantDischarging: knownFalse},
+		{name: "legacy discharging", upsStatus: "OB DISCHRG", wantCharging: knownFalse, wantDischarging: knownTrue},
+		{name: "modern charging", upsStatus: "OL", modern: stringPointer("charging"), wantCharging: knownTrue, wantDischarging: knownFalse},
+		{name: "modern discharging", upsStatus: "OB", modern: stringPointer("discharging"), wantCharging: knownFalse, wantDischarging: knownTrue},
+		{name: "modern floating", upsStatus: "OL", modern: stringPointer("floating"), wantCharging: knownFalse, wantDischarging: knownFalse},
+		{name: "modern resting case insensitive", upsStatus: "OL", modern: stringPointer(" ReStInG "), wantCharging: knownFalse, wantDischarging: knownFalse},
+		{name: "matching modern charging", upsStatus: "OL CHRG", modern: stringPointer("charging"), wantCharging: knownTrue, wantDischarging: knownFalse},
+		{name: "matching modern discharging", upsStatus: "OB DISCHRG", modern: stringPointer("discharging"), wantCharging: knownFalse, wantDischarging: knownTrue},
+		{name: "malformed modern blocks legacy fallback", upsStatus: "OL CHRG", modern: stringPointer("unknown"), wantCharging: unknown, wantDischarging: unknown, wantIssue: "invalid-battery-charger-status"},
+		{name: "blank modern blocks legacy fallback", upsStatus: "OL CHRG", modern: stringPointer(" "), wantCharging: unknown, wantDischarging: unknown, wantIssue: "invalid-battery-charger-status"},
+		{name: "malformed modern remains primary over contradictory legacy", upsStatus: "OL CHRG DISCHRG", modern: stringPointer("unknown"), wantCharging: unknown, wantDischarging: unknown, wantIssue: "invalid-battery-charger-status"},
+		{name: "modern charging contradicts legacy discharging", upsStatus: "OB DISCHRG", modern: stringPointer("charging"), wantCharging: unknown, wantDischarging: unknown, wantIssue: "conflicting-charge-status"},
+		{name: "modern discharging contradicts legacy charging", upsStatus: "OL CHRG", modern: stringPointer("discharging"), wantCharging: unknown, wantDischarging: unknown, wantIssue: "conflicting-charge-status"},
+		{name: "modern floating contradicts legacy charging", upsStatus: "OL CHRG", modern: stringPointer("floating"), wantCharging: unknown, wantDischarging: unknown, wantIssue: "conflicting-charge-status"},
+		{name: "modern resting contradicts legacy discharging", upsStatus: "OB DISCHRG", modern: stringPointer("resting"), wantCharging: unknown, wantDischarging: unknown, wantIssue: "conflicting-charge-status"},
+		{name: "legacy contradiction stays local", upsStatus: "OL CHRG DISCHRG", wantCharging: unknown, wantDischarging: unknown, wantIssue: "conflicting-charge-status"},
+		{name: "legacy contradiction defeats valid modern state", upsStatus: "OL CHRG DISCHRG", modern: stringPointer("charging"), wantCharging: unknown, wantDischarging: unknown, wantIssue: "conflicting-charge-status"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			variables := map[string]string{"ups.status": test.upsStatus}
+			if test.modern != nil {
+				variables["battery.charger.status"] = *test.modern
+			}
+			state := FromSnapshot(nut.Snapshot{Variables: variables, CollectedAt: now}, Options{Now: now})
+			if state.Status.Charging != test.wantCharging || state.Status.Discharging != test.wantDischarging {
+				t.Fatalf("charger state = charging %+v, discharging %+v; want %+v/%+v", state.Status.Charging, state.Status.Discharging, test.wantCharging, test.wantDischarging)
+			}
+			if state.Availability != AvailabilityAvailable || state.AvailabilityReason != "" {
+				t.Fatalf("charger evidence changed UPS availability: %q (%q)", state.Availability, state.AvailabilityReason)
+			}
+			if test.wantIssue != "" && !containsIssue(state.Issues, test.wantIssue) {
+				t.Fatalf("missing issue %q: %v", test.wantIssue, state.Issues)
+			}
+		})
+	}
+}
+
+func TestDuplicateStatusIssueIsEmittedOncePerSnapshot(t *testing.T) {
+	now := time.Now().UTC()
+	state := FromSnapshot(nut.Snapshot{
+		Variables:   map[string]string{"ups.status": "OL CHRG CHRG CHRG OL"},
+		CollectedAt: now,
+	}, Options{Now: now})
+
+	count := 0
+	for _, issue := range state.Issues {
+		if issue == "duplicate-status-token" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("duplicate-status-token issue count = %d, want 1: %v", count, state.Issues)
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
+}
+
 func TestFallbackGroupStateIsMixedOnlyFromFourKnownOutlets(t *testing.T) {
 	now := time.Now().UTC()
 	variables := map[string]string{"ups.status": "OL"}
@@ -339,7 +651,7 @@ func TestFallbackGroupStateIsMixedOnlyFromFourKnownOutlets(t *testing.T) {
 	}
 }
 
-func TestConflictingGroupAndOutletEvidenceRemainsUnknown(t *testing.T) {
+func TestStrayGroupStatusDoesNotBindSyntheticFallbackTopology(t *testing.T) {
 	now := time.Now().UTC()
 	variables := map[string]string{
 		"ups.status":            "OL",
@@ -349,17 +661,227 @@ func TestConflictingGroupAndOutletEvidenceRemainsUnknown(t *testing.T) {
 		variables[fmt.Sprintf("outlet.%d.status", index)] = "on"
 	}
 	state := FromSnapshot(nut.Snapshot{Variables: variables, CollectedAt: now}, Options{Now: now})
-	if state.Groups[0].RelayState != RelayUnknown {
-		t.Fatalf("conflicting relay evidence was promoted: %+v", state.Groups[0])
+	if state.Groups[0].RelayState != RelayOn {
+		t.Fatalf("fallback member evidence was lost: %+v", state.Groups[0])
 	}
-	found := false
-	for _, issue := range state.Issues {
-		if issue == "conflicting-relay-group-1-status" {
-			found = true
+	if state.NativeGroupsObserved {
+		t.Fatal("stray group row without outlet.group.count became an observed table")
+	}
+	if containsIssue(state.Issues, "conflicting-relay-group-1-status") {
+		t.Fatalf("unbound group row conflicted with synthetic fallback: %v", state.Issues)
+	}
+}
+
+func TestGroupOnlyNativeTableRetainsPartialEvidenceWithoutInventingOutlets(t *testing.T) {
+	now := time.Now().UTC()
+	state := FromSnapshot(nut.Snapshot{
+		Variables: map[string]string{
+			"ups.status":                "OL",
+			"outlet.group.count":        "2",
+			"outlet.group.1.id":         "bank-a",
+			"outlet.group.1.name":       " Critical loads ",
+			"outlet.group.1.type":       "vendor-bank",
+			"outlet.group.1.count":      "4",
+			"outlet.group.1.switchable": "yes",
+			"outlet.group.1.status":     "on",
+			"outlet.group.2.id":         " bank-b ",
+			"outlet.group.2.type":       "opaque group type",
+			"outlet.group.2.switchable": "no",
+		},
+		CollectedAt: now,
+	}, Options{Now: now})
+
+	assertFallbackTopology(t, state)
+	if !state.NativeGroupsObserved || len(state.NativeGroups) != 2 {
+		t.Fatalf("group-only table was not retained: observed=%t rows=%+v", state.NativeGroupsObserved, state.NativeGroups)
+	}
+	first := state.NativeGroups[0]
+	if first.SourceIndex != 1 || first.NativeID != "bank-a" || first.Name != "Critical loads" ||
+		first.Type != "vendor-bank" || !first.TypeObserved || first.OutletCount != 4 ||
+		!first.OutletCountPresent || !first.OutletCountKnown || !first.SwitchablePresent ||
+		first.Switchable != (Truth{Value: true, Known: true}) || !first.RelayStatePresent || first.RelayState != RelayOn {
+		t.Fatalf("first native group row lost evidence: %+v", first)
+	}
+	second := state.NativeGroups[1]
+	if second.SourceIndex != 2 || second.NativeID != " bank-b " || second.Type != "opaque group type" ||
+		!second.TypeObserved || second.OutletCountPresent || second.OutletCountKnown || !second.SwitchablePresent ||
+		second.Switchable != (Truth{Value: false, Known: true}) || second.RelayStatePresent || second.RelayState != RelayUnknown {
+		t.Fatalf("second native group row lost optional-field provenance: %+v", second)
+	}
+	if len(state.Issues) != 0 {
+		t.Fatalf("valid group-only table produced issues: %v", state.Issues)
+	}
+}
+
+func TestGroupOnlyElectricalFieldsDoNotLeakIntoUPSOrSyntheticOutlets(t *testing.T) {
+	now := time.Now().UTC()
+	state := FromSnapshot(nut.Snapshot{
+		Variables: map[string]string{
+			"ups.status":                 "OL",
+			"outlet.group.count":         "1",
+			"outlet.group.1.id":          "bank-a",
+			"outlet.group.1.voltage":     "234",
+			"outlet.group.1.current":     "1",
+			"outlet.group.1.realpower":   "104",
+			"outlet.group.1.power":       "234",
+			"outlet.group.1.powerfactor": "0.44",
+		},
+		CollectedAt: now,
+	}, Options{Now: now})
+
+	assertFallbackTopology(t, state)
+	if !state.NativeGroupsObserved || len(state.NativeGroups) != 1 {
+		t.Fatalf("native group table was not retained: %+v", state.NativeGroups)
+	}
+	if state.Electrical.OutputVoltage.Known || state.Electrical.OutputCurrent.Known ||
+		state.Electrical.OutputPowerW.Known || state.Electrical.OutputApparentPowerVA.Known || state.Electrical.OutputPowerFactor.Known {
+		t.Fatalf("group electrical evidence leaked into UPS-wide telemetry: %+v", state.Electrical)
+	}
+	for _, outlet := range state.Outlets {
+		if outlet.PowerMeter || outlet.Voltage.Known || outlet.Current.Known || outlet.PowerW.Known || outlet.PowerFactor.Known {
+			t.Fatalf("group electrical evidence leaked into synthetic outlet: %+v", outlet)
 		}
 	}
-	if !found {
-		t.Fatalf("conflict was not made explicit: %v", state.Issues)
+}
+
+func TestNativeGroupTableSurvivesMalformedOutletCount(t *testing.T) {
+	now := time.Now().UTC()
+	state := FromSnapshot(nut.Snapshot{
+		Variables: map[string]string{
+			"ups.status":            "OL",
+			"outlet.count":          "not-an-integer",
+			"outlet.group.count":    "1",
+			"outlet.group.1.id":     "bank-a",
+			"outlet.group.1.count":  "3",
+			"outlet.group.1.type":   "native-only",
+			"outlet.group.1.status": "off",
+		},
+		CollectedAt: now,
+	}, Options{Now: now})
+
+	assertFallbackTopology(t, state)
+	if !state.NativeGroupsObserved || len(state.NativeGroups) != 1 || state.NativeGroups[0].OutletCount != 3 {
+		t.Fatalf("valid group table was discarded with malformed outlet.count: %+v", state.NativeGroups)
+	}
+	if !containsIssue(state.Issues, "invalid-outlet-count") {
+		t.Fatalf("malformed outlet count was not reported: %v", state.Issues)
+	}
+}
+
+func TestNativeGroupTableCountIsBoundedAndZeroIsObserved(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name         string
+		raw          string
+		wantObserved bool
+		wantIssue    bool
+	}{
+		{name: "zero", raw: "0", wantObserved: true},
+		{name: "negative", raw: "-1", wantIssue: true},
+		{name: "fractional", raw: "1.5", wantIssue: true},
+		{name: "over limit", raw: fmt.Sprint(MaxOutletCount + 1), wantIssue: true},
+		{name: "not numeric", raw: "NaN", wantIssue: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := FromSnapshot(nut.Snapshot{
+				Variables: map[string]string{
+					"ups.status":            "OL",
+					"outlet.group.count":    test.raw,
+					"outlet.group.1.id":     "stray-row",
+					"outlet.group.1.status": "on",
+				},
+				CollectedAt: now,
+			}, Options{Now: now})
+			assertFallbackTopology(t, state)
+			if state.NativeGroupsObserved != test.wantObserved || len(state.NativeGroups) != 0 {
+				t.Fatalf("native group table = observed %t rows %+v, want observed %t and no rows", state.NativeGroupsObserved, state.NativeGroups, test.wantObserved)
+			}
+			if got := containsIssue(state.Issues, "invalid-outlet-group-count"); got != test.wantIssue {
+				t.Fatalf("invalid count issue = %t, want %t: %v", got, test.wantIssue, state.Issues)
+			}
+		})
+	}
+}
+
+func TestNativeGroupRowsRetainOnlySafeMalformedEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	state := FromSnapshot(nut.Snapshot{
+		Variables: map[string]string{
+			"ups.status":                "OL",
+			"outlet.group.count":        "2",
+			"outlet.group.1.name":       "Unidentified row",
+			"outlet.group.1.count":      "garbage",
+			"outlet.group.1.switchable": "sometimes",
+			"outlet.group.1.status":     "maybe",
+			"outlet.group.2.id":         "bad\x00id",
+			"outlet.group.2.type":       "bad\nkind",
+			"outlet.group.2.count":      "0",
+		},
+		CollectedAt: now,
+	}, Options{Now: now})
+
+	if !state.NativeGroupsObserved || len(state.NativeGroups) != 2 {
+		t.Fatalf("malformed rows were discarded instead of retained inertly: %+v", state.NativeGroups)
+	}
+	first := state.NativeGroups[0]
+	if first.NativeID != "" || first.Name != "Unidentified row" || !first.OutletCountPresent || first.OutletCountKnown ||
+		!first.SwitchablePresent || first.Switchable.Known || !first.RelayStatePresent || first.RelayState != RelayUnknown {
+		t.Fatalf("malformed optional evidence was promoted or lost: %+v", first)
+	}
+	second := state.NativeGroups[1]
+	if second.NativeID != "" || second.Type != "" || second.TypeObserved || !second.OutletCountPresent ||
+		!second.OutletCountKnown || second.OutletCount != 0 {
+		t.Fatalf("invalid identity/type was retained or valid zero count lost: %+v", second)
+	}
+	for _, want := range []string{
+		"missing-outlet-group-1-id",
+		"invalid-outlet-group-1-count",
+		"invalid-outlet-group-1-switchable",
+		"invalid-outlet-group-1-status",
+		"invalid-outlet-group-2-id",
+		"invalid-outlet-group-2-type",
+	} {
+		if !containsIssue(state.Issues, want) {
+			t.Fatalf("malformed native row lacked %q: %v", want, state.Issues)
+		}
+	}
+}
+
+func TestDuplicateNativeGroupIDsRemainObservableButCannotBindOutlets(t *testing.T) {
+	now := time.Now().UTC()
+	state := FromSnapshot(nut.Snapshot{
+		Variables: map[string]string{
+			"ups.status":                "OL",
+			"outlet.count":              "2",
+			"outlet.1.groupid":          "bank-a",
+			"outlet.1.status":           "on",
+			"outlet.2.groupid":          "bank-a",
+			"outlet.2.status":           "on",
+			"outlet.group.count":        "2",
+			"outlet.group.1.id":         "bank-a",
+			"outlet.group.1.name":       "First row",
+			"outlet.group.1.count":      "2",
+			"outlet.group.1.switchable": "yes",
+			"outlet.group.1.status":     "off",
+			"outlet.group.2.id":         "bank-a",
+			"outlet.group.2.name":       "Second row",
+			"outlet.group.2.count":      "2",
+			"outlet.group.2.switchable": "no",
+			"outlet.group.2.status":     "off",
+		},
+		CollectedAt: now,
+	}, Options{Now: now})
+
+	if len(state.NativeGroups) != 2 || state.NativeGroups[0].NativeID != "bank-a" || state.NativeGroups[1].NativeID != "bank-a" {
+		t.Fatalf("duplicate native rows were not retained in source order: %+v", state.NativeGroups)
+	}
+	if len(state.Groups) != 1 || state.Groups[0].SourceIndex != 0 || state.Groups[0].Name != "Relay Group 1" ||
+		state.Groups[0].SwitchablePresent || state.Groups[0].RelayState != RelayOn {
+		t.Fatalf("ambiguous native rows enriched physical topology: %+v", state.Groups)
+	}
+	if !containsIssue(state.Issues, "duplicate-outlet-group-id") {
+		t.Fatalf("duplicate native ID was not reported: %v", state.Issues)
 	}
 }
 
@@ -536,6 +1058,32 @@ func TestPowerMeterRequiresDirectPerOutletCurrentOrPowerKey(t *testing.T) {
 	}
 	if state.Outlets[2].PowerW.Known {
 		t.Fatal("apparent power was mislabeled as real watts")
+	}
+}
+
+func TestOutletPowerFactorUsesClosedUnitInterval(t *testing.T) {
+	now := time.Now().UTC()
+	state := FromSnapshot(nut.Snapshot{
+		Variables: map[string]string{
+			"ups.status":           "OL",
+			"outlet.count":         "3",
+			"outlet.1.powerfactor": "1",
+			"outlet.2.powerfactor": "1.01",
+			"outlet.3.powerfactor": "-0.01",
+		},
+		CollectedAt: now,
+	}, Options{Now: now})
+
+	if !state.Outlets[0].PowerFactor.Known || state.Outlets[0].PowerFactor.Value != 1 {
+		t.Fatalf("unit power factor was rejected: %+v", state.Outlets[0].PowerFactor)
+	}
+	for _, index := range []int{2, 3} {
+		if state.Outlets[index-1].PowerFactor.Known {
+			t.Fatalf("outlet %d out-of-range power factor was promoted: %+v", index, state.Outlets[index-1].PowerFactor)
+		}
+		if !containsIssue(state.Issues, fmt.Sprintf("invalid-outlet-%d-powerfactor", index)) {
+			t.Fatalf("outlet %d invalid factor lacked bounded issue: %v", index, state.Issues)
+		}
 	}
 }
 
@@ -832,6 +1380,11 @@ func assertFallbackTopology(t *testing.T, state State) {
 	if !equalInts(state.Groups[0].OutletIndices, []int{1, 2, 3, 4}) ||
 		!equalInts(state.Groups[1].OutletIndices, []int{5, 6, 7, 8}) {
 		t.Fatalf("fallback grouping is not 4+4: %+v", state.Groups)
+	}
+	for _, group := range state.Groups {
+		if group.SourceIndex != 0 || group.NativeID != "" {
+			t.Fatalf("synthetic fallback group retained a native source binding: %+v", group)
+		}
 	}
 	for offset, outlet := range state.Outlets {
 		wantGroup := offset/4 + 1

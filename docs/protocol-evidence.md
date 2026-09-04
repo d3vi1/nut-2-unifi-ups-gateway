@@ -166,6 +166,7 @@ compatibility choices:
 | equal `outlet.N.groupid` values | same deterministic positive `relay_group` | **CANDIDATE** |
 | missing `outlet.N.groupid` | unique singleton `relay_group` | conservative **CANDIDATE** fallback |
 | exact `outlet.group.G.id` match with consistent optional count | associates group metadata/status/switchability | evidence-bound **CANDIDATE** mapping |
+| bounded `outlet.group.count` without `outlet.count` | retained as a separate partial native group table; never applied to carrier rows | evidence-bound observation, no projected topology |
 | unambiguous USB `outlet.N.type` or `.designator` | `0x20000` physical-class bit | conservative **CANDIDATE** mapping |
 | other or absent type/designator | `0x10000` AC-compatible bit | interoperability **CANDIDATE**, not a native-type assertion |
 | affirmative outlet, matched-group, or global NUT `switchable=yes` | retained as native topology evidence; no `HAS_RELAY` bit in read-only v1 | evidence-bound **CANDIDATE** observation |
@@ -181,12 +182,19 @@ values are never spread across outlets, so a real UPS total cannot appear as
 fabricated identical per-outlet amperage. Shared relay states are emitted
 consistently across group members; conflicts make the state unknown.
 
-UPS-wide real-power mapping is unit-preserving: `ups.realpower` is output W and
-`ups.realpower.nominal` is budget W. NUT defines `ups.power` and
-`ups.power.nominal` as VA, so they are not sent in fields Network labels as
-watts. `ups.load` and `output.current` are not used to invent power. Standard
-`ups.beeper.status` values are preserved, but the `muted` state has no lossless
-UniFi boolean representation.
+UPS-wide real-power mapping is unit-preserving. Ordered W aliases are
+`ups.realpower` then `output.realpower`, with the same ordering for nominal W;
+ordered apparent-power aliases are `ups.power` then `output.power`, likewise
+for nominal VA. VA is never sent in a field Network labels as watts. Conflicts
+and malformed present aliases fail closed. Direct `output.powerfactor` has
+priority; when absent, and only with valid same-snapshot real and apparent
+power, `W/VA` supplies a value in 0–1. `ups.load`, voltage/current products,
+nominal VA, and power factor are not used to invent real power. Modern
+`battery.charger.status` is preferred over the legacy `CHRG`/`DISCHRG` tokens;
+contradictions are omitted rather than resolved by precedence. When no charger
+evidence exists, charging state remains unknown. Standard `ups.beeper.status`
+values are preserved, but the `muted` state has no lossless UniFi boolean
+representation.
 
 When no valid `outlet.count` exists, the gateway reports a conservative
 AC-compatible layout: eight outlets in two 4+4 groups for `USWDA26`, or nine

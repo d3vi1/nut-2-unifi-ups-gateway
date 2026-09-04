@@ -97,9 +97,11 @@ func projectPowerDevice(
 	}
 	if observation.Electrical.OutputPowerNominalW.Known && observation.Electrical.OutputPowerNominalW.Value > 0 {
 		budget := roundedInt(observation.Electrical.OutputPowerNominalW.Value)
-		report.VBMS.Battery.TotalPowerBudgetW = &budget
+		if budget > 0 {
+			report.VBMS.Battery.TotalPowerBudgetW = &budget
+		}
 	}
-	if observation.Electrical.OutputPowerFactor.Known && observation.Electrical.OutputPowerFactor.Value <= 1 {
+	if observation.Electrical.OutputPowerFactor.Known && observation.Electrical.OutputPowerFactor.Value >= 0 && observation.Electrical.OutputPowerFactor.Value <= 1 {
 		report.VBMS.Battery.TotalPowerFactor = floatPointer(observation.Electrical.OutputPowerFactor.Value)
 	}
 	if observation.Electrical.OutputVoltage.Known {
@@ -220,7 +222,7 @@ func projectAvailableOutletTelemetry(outlets []inform.OutletTelemetry, observati
 			power := roundedInt(source.PowerW.Value)
 			outlets[index].PowerW = &power
 		}
-		if source.PowerFactor.Known && source.PowerFactor.Value <= 1 {
+		if source.PowerFactor.Known && source.PowerFactor.Value >= 0 && source.PowerFactor.Value <= 1 {
 			outlets[index].PowerFactor = floatPointer(source.PowerFactor.Value)
 		}
 	}

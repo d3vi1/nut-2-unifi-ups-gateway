@@ -2,11 +2,14 @@ package gateway
 
 import (
 	"encoding/json"
+	"math"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/config"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/model"
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/nut"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/state"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/unifi/inform"
 )
@@ -136,6 +139,157 @@ func TestReadOnlyProjectionUsesDirectNominalWattsAndHidesUnsupportedControls(t *
 	document = projectedPayloadDocument(t, observation)
 	if _, exists := document["beep_enabled"]; exists {
 		t.Fatal("lossy muted beeper status was serialized as a boolean")
+	}
+}
+
+func TestNUTElectricalGoldenProjectionPreservesWattsAndDerivesPowerFactor(t *testing.T) {
+	collectedAt := time.Unix(1_800_000_000, 0).UTC()
+	variables := map[string]string{
+		"ups.status":               "OL",
+		"ups.realpower":            "104",
+		"ups.power":                "234",
+		"output.realpower.nominal": "1000",
+		"output.power.nominal":     "1500",
+		"output.current":           "1.0",
+		"output.voltage":           "233.1",
+		"battery.charger.status":   "resting",
+	}
+	observation := model.FromSnapshot(nut.Snapshot{
+		CollectedAt: collectedAt,
+		Variables:   variables,
+	}, model.Options{Now: collectedAt.Add(time.Second)})
+	if !observation.Electrical.OutputApparentPowerVA.Known || observation.Electrical.OutputApparentPowerVA.Value != 234 ||
+		!observation.Electrical.OutputApparentPowerNominalVA.Known || observation.Electrical.OutputApparentPowerNominalVA.Value != 1500 {
+		t.Fatalf("apparent-power evidence was not retained canonically: %+v", observation.Electrical)
+	}
+
+	document := projectedPayloadDocument(t, observation)
+	battery := document["vbms_table"].(map[string]any)["battpool"].(map[string]any)
+	if battery["device_total_power_output"] != float64(104) {
+		t.Fatalf("real power = %v, want 104 W", battery["device_total_power_output"])
+	}
+	if battery["device_total_power_budget"] != float64(1000) {
+		t.Fatalf("real-power budget = %v, want 1000 W", battery["device_total_power_budget"])
+	}
+	if battery["device_output_current"] != float64(1) || battery["device_output_voltage"] != 233.1 {
+		t.Fatalf("direct output telemetry was not preserved: %+v", battery)
+	}
+	gotPowerFactor, ok := battery["device_total_power_factor"].(float64)
+	if !ok || math.Abs(gotPowerFactor-(104.0/234.0)) > 1e-12 {
+		t.Fatalf("derived power factor = %v, want %v", battery["device_total_power_factor"], 104.0/234.0)
+	}
+	if battery["ischarging"] != false {
+		t.Fatalf("resting charger projected as %v, want false", battery["ischarging"])
+	}
+
+	staleObservation := model.FromSnapshot(nut.Snapshot{
+		CollectedAt: collectedAt,
+		Variables:   variables,
+	}, model.Options{Now: collectedAt.Add(21 * time.Second), StaleAfter: 20 * time.Second})
+	if staleObservation.Availability != model.AvailabilityStale {
+		t.Fatalf("fixture availability = %q, want stale", staleObservation.Availability)
+	}
+	staleDocument := projectedPayloadDocument(t, staleObservation)
+	staleBattery := staleDocument["vbms_table"].(map[string]any)["battpool"].(map[string]any)
+	for _, key := range []string{
+		"device_total_power_output",
+		"device_total_power_budget",
+		"device_total_power_factor",
+		"ischarging",
+	} {
+		if _, exists := staleBattery[key]; exists {
+			t.Fatalf("stale %s was projected: %+v", key, staleBattery)
+		}
+	}
+}
+
+func TestSubWattNominalPowerDoesNotRoundIntoZeroBudget(t *testing.T) {
+	document := projectedPayloadDocument(t, model.State{
+		Availability: model.AvailabilityAvailable,
+		Electrical: model.Electrical{
+			OutputPowerNominalW: model.Measurement{Value: 0.4, Known: true},
+		},
+	})
+	battery := document["vbms_table"].(map[string]any)["battpool"].(map[string]any)
+	if _, exists := battery["device_total_power_budget"]; exists {
+		t.Fatalf("sub-watt nominal power became a zero-watt budget: %+v", battery)
+	}
+}
+
+func TestUnknownChargingStateIsOmitted(t *testing.T) {
+	collectedAt := time.Unix(1_800_000_000, 0).UTC()
+	observation := model.FromSnapshot(nut.Snapshot{
+		CollectedAt: collectedAt,
+		Variables:   map[string]string{"ups.status": "OL"},
+	}, model.Options{Now: collectedAt})
+	document := projectedPayloadDocument(t, observation)
+	battery := document["vbms_table"].(map[string]any)["battpool"].(map[string]any)
+	if _, exists := battery["ischarging"]; exists {
+		t.Fatalf("unknown charger state was serialized: %+v", battery)
+	}
+}
+
+func TestGroupsOnlyNUTTableDoesNotModifyEitherCarrierPayload(t *testing.T) {
+	collectedAt := time.Unix(1_800_000_000, 0).UTC()
+	baseline := model.FromSnapshot(nut.Snapshot{
+		CollectedAt: collectedAt,
+		Variables:   map[string]string{"ups.status": "OL"},
+	}, model.Options{Now: collectedAt.Add(time.Second)})
+	groupsOnly := model.FromSnapshot(nut.Snapshot{
+		CollectedAt: collectedAt,
+		Variables: map[string]string{
+			"ups.status":                "OL",
+			"outlet.group.count":        "2",
+			"outlet.group.1.id":         "battery-bank",
+			"outlet.group.1.name":       "Battery-backed outlets",
+			"outlet.group.1.type":       "battery",
+			"outlet.group.1.count":      "4",
+			"outlet.group.1.status":     "on",
+			"outlet.group.1.switchable": "yes",
+			"outlet.group.1.current":    "1.2",
+			"outlet.group.1.realpower":  "104",
+			"outlet.group.1.power":      "234",
+			"outlet.group.2.id":         "surge-bank",
+			"outlet.group.2.status":     "off",
+		},
+	}, model.Options{Now: collectedAt.Add(time.Second)})
+	if groupsOnly.TopologyObserved || !groupsOnly.NativeGroupsObserved {
+		t.Fatalf("groups-only source classification = topology:%v native-groups:%v", groupsOnly.TopologyObserved, groupsOnly.NativeGroupsObserved)
+	}
+
+	for _, profile := range []string{inform.ModelUPS2UEU, inform.ModelUPS2UProEU} {
+		t.Run(profile, func(t *testing.T) {
+			want := projectedPayloadDocumentForProfile(t, profile, baseline)
+			got := projectedPayloadDocumentForProfile(t, profile, groupsOnly)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("groups-only metadata changed %s carrier payload\ngot:  %+v\nwant: %+v", profile, got, want)
+			}
+		})
+	}
+}
+
+func TestProjectionRejectsNegativeCanonicalPowerFactors(t *testing.T) {
+	document := projectedPayloadDocument(t, model.State{
+		Availability:     model.AvailabilityAvailable,
+		TopologyObserved: true,
+		Electrical: model.Electrical{
+			OutputPowerFactor: model.Measurement{Value: -0.1, Known: true},
+		},
+		Groups: []model.OutletGroup{{Index: 1, OutletIndices: []int{1}}},
+		Outlets: []model.Outlet{{
+			Index:       1,
+			RelayGroup:  1,
+			Name:        "Outlet 1",
+			PowerFactor: model.Measurement{Value: -0.1, Known: true},
+		}},
+	})
+	battery := document["vbms_table"].(map[string]any)["battpool"].(map[string]any)
+	if _, exists := battery["device_total_power_factor"]; exists {
+		t.Fatalf("negative UPS power factor escaped projection: %+v", battery)
+	}
+	outlet := document["outlet_table"].([]any)[0].(map[string]any)
+	if _, exists := outlet["outlet_power_factor"]; exists {
+		t.Fatalf("negative outlet power factor escaped projection: %+v", outlet)
 	}
 }
 

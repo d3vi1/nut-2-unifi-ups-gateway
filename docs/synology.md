@@ -280,7 +280,7 @@ renders it for this carrier even when server access is not advertised.
 | Inform remains pending or returns 404 | Confirm `N2U_UNIFI_MODEL=USWDA26`, update Network, and compare the exact build with [protocol evidence](protocol-evidence.md). |
 | Only eight 4+4 outlets appear | The NUT driver supplied no valid `outlet.count`; the default carrier fallback is working as designed. |
 | Outlets 5–8 are marked Surge | Network's `USWDA26` catalog fixes this illustration; it is not derived from NUT or `outlet_caps`. |
-| Power is `<100/0 W` or current is exactly `1.00 A` | Inspect direct NUT `ups.realpower`, `ups.realpower.nominal`, and `output.current`; missing precision and W values are never invented. |
+| Power is `<100/0 W` or current is exactly `1.00 A` | Inspect `ups.realpower`/`output.realpower`, their `.nominal` aliases, and `output.current`; missing precision and W values are never invented. |
 | NUT Server stays unchecked | This is the safe default. Follow the external reachability test above before enabling the experimental advertisement. |
 | Remote power actions do nothing | Expected and safe: gateway v1 is read-only and has no NUT command path. |
 | Pulling from GHCR is denied | The official release package must be public. For a private development package only, log in with a token limited to `read:packages`; never store it in Compose or `.env`. |

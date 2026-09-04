@@ -17,7 +17,7 @@ const defaultStaleAfter = 20 * time.Second
 
 const (
 	maxBatteryRuntimeSeconds = 31 * 24 * 60 * 60
-	maxObservedPowerW        = 1_000_000_000
+	maxObservedPower         = 1_000_000_000
 	// MaxOutletCount bounds topology controlled by an untrusted NUT server.
 	MaxOutletCount = 64
 )
@@ -100,13 +100,15 @@ type Battery struct {
 
 // Electrical contains UPS-wide input and output measurements.
 type Electrical struct {
-	InputVoltage        Measurement
-	OutputVoltage       Measurement
-	OutputCurrent       Measurement
-	OutputPowerW        Measurement
-	OutputPowerNominalW Measurement
-	OutputPowerFactor   Measurement
-	LoadPercent         Measurement
+	InputVoltage                 Measurement
+	OutputVoltage                Measurement
+	OutputCurrent                Measurement
+	OutputPowerW                 Measurement
+	OutputPowerNominalW          Measurement
+	OutputApparentPowerVA        Measurement
+	OutputApparentPowerNominalVA Measurement
+	OutputPowerFactor            Measurement
+	LoadPercent                  Measurement
 }
 
 // OutletType retains the NUT-side physical type classification. NUT defines
@@ -158,21 +160,41 @@ type OutletGroup struct {
 	RelayState        RelayState
 }
 
+// NativeOutletGroup retains a source-ordered NUT outlet.group.N row even when
+// NUT supplies no physical outlet inventory. It never implies outlet membership.
+// Present flags distinguish absent optional evidence from malformed evidence.
+type NativeOutletGroup struct {
+	SourceIndex        int
+	NativeID           string
+	Name               string
+	Type               string
+	TypeObserved       bool
+	OutletCount        int
+	OutletCountPresent bool
+	OutletCountKnown   bool
+	Switchable         Truth
+	SwitchablePresent  bool
+	RelayState         RelayState
+	RelayStatePresent  bool
+}
+
 // State is the conservative canonical view consumed by protocol projections.
 // Issues contains bounded machine-readable codes, never raw upstream values.
 type State struct {
-	Availability       Availability
-	AvailabilityReason string
-	ObservedAt         time.Time
-	Age                time.Duration
-	Status             Status
-	BeeperStatus       BeeperStatus
-	Battery            Battery
-	Electrical         Electrical
-	TopologyObserved   bool
-	Groups             []OutletGroup
-	Outlets            []Outlet
-	Issues             []string
+	Availability         Availability
+	AvailabilityReason   string
+	ObservedAt           time.Time
+	Age                  time.Duration
+	Status               Status
+	BeeperStatus         BeeperStatus
+	Battery              Battery
+	Electrical           Electrical
+	TopologyObserved     bool
+	NativeGroupsObserved bool
+	NativeGroups         []NativeOutletGroup
+	Groups               []OutletGroup
+	Outlets              []Outlet
+	Issues               []string
 }
 
 // Options controls observation freshness.
@@ -221,18 +243,19 @@ func FromSnapshot(snapshot nut.Snapshot, options Options) State {
 
 	initializeObservedTopology(&state, snapshot.Variables)
 	mapStatus(&state, snapshot.Variables["ups.status"])
+	mapChargerStatus(&state, snapshot.Variables)
 	mapBeeperStatus(&state, snapshot.Variables)
 	mapMeasurements(&state, snapshot.Variables)
 	mapOutletTelemetry(&state, snapshot.Variables)
-	mapGroupRelayStates(&state, snapshot.Variables)
+	mapGroupRelayStates(&state)
 	return state
 }
 
 func initializeFallbackTopology(state *State) {
 	state.TopologyObserved = false
 	state.Groups = []OutletGroup{
-		{Index: 1, SourceIndex: 1, Name: "Zone 1", OutletIndices: []int{1, 2, 3, 4}, RelayState: RelayUnknown},
-		{Index: 2, SourceIndex: 2, Name: "Zone 2", OutletIndices: []int{5, 6, 7, 8}, RelayState: RelayUnknown},
+		{Index: 1, Name: "Zone 1", OutletIndices: []int{1, 2, 3, 4}, RelayState: RelayUnknown},
+		{Index: 2, Name: "Zone 2", OutletIndices: []int{5, 6, 7, 8}, RelayState: RelayUnknown},
 	}
 	state.Outlets = make([]Outlet, 8)
 	for outletIndex := range state.Outlets {
@@ -257,6 +280,12 @@ type nativeGroupMetadata struct {
 	SwitchablePresent bool
 }
 
+type nativeGroupTable struct {
+	Observed bool
+	Rows     []NativeOutletGroup
+	ByID     map[string]nativeGroupMetadata
+}
+
 type outletGroupKey struct {
 	NativeID       string
 	SingletonIndex int
@@ -267,6 +296,10 @@ type outletGroupKey struct {
 // equal IDs mean equal groups, but their spelling and numeric appearance have
 // no relationship to the dense relay_group integers required by UniFi.
 func initializeObservedTopology(state *State, variables map[string]string) {
+	nativeGroups := readNativeGroupMetadata(variables, &state.Issues)
+	state.NativeGroupsObserved = nativeGroups.Observed
+	state.NativeGroups = nativeGroups.Rows
+
 	rawCount, exists := variables["outlet.count"]
 	if !exists {
 		return
@@ -280,7 +313,6 @@ func initializeObservedTopology(state *State, variables map[string]string) {
 	state.TopologyObserved = true
 	state.Groups = nil
 	state.Outlets = make([]Outlet, count)
-	groupMetadata := readNativeGroupMetadata(variables, &state.Issues)
 	groupByKey := make(map[outletGroupKey]int, count)
 
 	for offset := range state.Outlets {
@@ -334,7 +366,7 @@ func initializeObservedTopology(state *State, variables map[string]string) {
 
 	for groupOffset := range state.Groups {
 		group := &state.Groups[groupOffset]
-		metadata, ok := groupMetadata[group.NativeID]
+		metadata, ok := nativeGroups.ByID[group.NativeID]
 		if group.NativeID == "" || !ok {
 			continue
 		}
@@ -353,8 +385,8 @@ func initializeObservedTopology(state *State, variables map[string]string) {
 	}
 }
 
-func readNativeGroupMetadata(variables map[string]string, issues *[]string) map[string]nativeGroupMetadata {
-	result := make(map[string]nativeGroupMetadata)
+func readNativeGroupMetadata(variables map[string]string, issues *[]string) nativeGroupTable {
+	result := nativeGroupTable{ByID: make(map[string]nativeGroupMetadata)}
 	rawCount, exists := variables["outlet.group.count"]
 	if !exists {
 		return result
@@ -364,46 +396,79 @@ func readNativeGroupMetadata(variables map[string]string, issues *[]string) map[
 		*issues = append(*issues, "invalid-outlet-group-count")
 		return result
 	}
+	result.Observed = true
+	result.Rows = make([]NativeOutletGroup, 0, count)
 	ambiguous := make(map[string]bool)
 	for index := 1; index <= count; index++ {
 		prefix := fmt.Sprintf("outlet.group.%d.", index)
+		row := NativeOutletGroup{
+			SourceIndex: index,
+			RelayState:  RelayUnknown,
+		}
 		rawID, idPresent := variables[prefix+"id"]
 		if !idPresent {
-			continue
-		}
-		id, validID := opaqueNativeID(rawID, 128)
-		if !validID {
+			*issues = append(*issues, fmt.Sprintf("missing-outlet-group-%d-id", index))
+		} else if id, validID := opaqueNativeID(rawID, 128); validID {
+			row.NativeID = id
+		} else {
 			*issues = append(*issues, fmt.Sprintf("invalid-outlet-group-%d-id", index))
-			continue
 		}
-		if ambiguous[id] {
-			continue
+		if rawName, ok := variables[prefix+"name"]; ok {
+			row.Name = optionalNativeText(rawName, 128)
+			if row.Name == "" {
+				*issues = append(*issues, fmt.Sprintf("invalid-outlet-group-%d-name", index))
+			}
 		}
-		if _, duplicate := result[id]; duplicate {
-			delete(result, id)
-			ambiguous[id] = true
-			*issues = append(*issues, "duplicate-outlet-group-id")
-			continue
+		if rawType, ok := variables[prefix+"type"]; ok {
+			row.Type = optionalNativeText(rawType, 128)
+			row.TypeObserved = row.Type != ""
+			if !row.TypeObserved {
+				*issues = append(*issues, fmt.Sprintf("invalid-outlet-group-%d-type", index))
+			}
 		}
-		metadata := nativeGroupMetadata{SourceIndex: index}
-		metadata.Name = optionalNativeText(variables[prefix+"name"], 128)
 		if rawSize, ok := variables[prefix+"count"]; ok {
+			row.OutletCountPresent = true
 			if size, validSize := boundedIntegral(rawSize, 0, MaxOutletCount); validSize {
-				metadata.ExpectedSize = size
-				metadata.HasSize = true
+				row.OutletCount = size
+				row.OutletCountKnown = true
 			} else {
-				metadata.InvalidSize = true
 				*issues = append(*issues, fmt.Sprintf("invalid-outlet-group-%d-count", index))
 			}
 		}
 		if rawSwitchable, ok := variables[prefix+"switchable"]; ok {
-			metadata.SwitchablePresent = true
-			metadata.Switchable = parseTruth(rawSwitchable)
-			if !metadata.Switchable.Known {
+			row.SwitchablePresent = true
+			row.Switchable = parseTruth(rawSwitchable)
+			if !row.Switchable.Known {
 				*issues = append(*issues, fmt.Sprintf("invalid-outlet-group-%d-switchable", index))
 			}
 		}
-		result[id] = metadata
+		if rawStatus, ok := variables[prefix+"status"]; ok {
+			row.RelayStatePresent = true
+			row.RelayState = parseRelay(rawStatus)
+			if row.RelayState == RelayUnknown {
+				*issues = append(*issues, fmt.Sprintf("invalid-outlet-group-%d-status", index))
+			}
+		}
+		result.Rows = append(result.Rows, row)
+
+		if row.NativeID == "" || ambiguous[row.NativeID] {
+			continue
+		}
+		if _, duplicate := result.ByID[row.NativeID]; duplicate {
+			delete(result.ByID, row.NativeID)
+			ambiguous[row.NativeID] = true
+			*issues = append(*issues, "duplicate-outlet-group-id")
+			continue
+		}
+		result.ByID[row.NativeID] = nativeGroupMetadata{
+			SourceIndex:       row.SourceIndex,
+			Name:              row.Name,
+			ExpectedSize:      row.OutletCount,
+			HasSize:           row.OutletCountPresent && row.OutletCountKnown,
+			InvalidSize:       row.OutletCountPresent && !row.OutletCountKnown,
+			Switchable:        row.Switchable,
+			SwitchablePresent: row.SwitchablePresent,
+		}
 	}
 	return result
 }
@@ -451,9 +516,13 @@ func mapStatus(state *State, raw string) {
 		return
 	}
 	seen := make(map[string]struct{}, len(tokens))
+	duplicateReported := false
 	for _, token := range tokens {
 		if _, duplicate := seen[token]; duplicate {
-			state.Issues = append(state.Issues, "duplicate-status-token")
+			if !duplicateReported {
+				state.Issues = append(state.Issues, "duplicate-status-token")
+				duplicateReported = true
+			}
 			continue
 		}
 		seen[token] = struct{}{}
@@ -481,20 +550,66 @@ func mapStatus(state *State, raw string) {
 			state.Issues = append(state.Issues, "unknown-power-status")
 		}
 	}
-	_, charging := seen["CHRG"]
-	_, discharging := seen["DISCHRG"]
-	if charging && discharging {
-		state.Availability = AvailabilityUnavailable
-		state.AvailabilityReason = "conflicting-charge-status"
-		state.Issues = append(state.Issues, "conflicting-charge-status")
-	}
 	state.Status.OnBattery = Truth{Value: onBattery, Known: online || onBattery || off}
 	state.Status.LowBattery = knownStatusFlag(seen, "LB")
-	state.Status.Charging = knownStatusFlag(seen, "CHRG")
-	state.Status.Discharging = knownStatusFlag(seen, "DISCHRG")
 	state.Status.Bypass = knownStatusFlag(seen, "BYPASS")
 	state.Status.Overloaded = knownStatusFlag(seen, "OVER")
 	state.Status.ReplaceBattery = knownStatusFlag(seen, "RB")
+}
+
+func mapChargerStatus(state *State, variables map[string]string) {
+	legacyCharging := statusHasToken(state.Status.Raw, "CHRG")
+	legacyDischarging := statusHasToken(state.Status.Raw, "DISCHRG")
+	raw, modernPresent := variables["battery.charger.status"]
+	var charging, discharging Truth
+	if modernPresent {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "charging":
+			charging = Truth{Value: true, Known: true}
+			discharging = Truth{Value: false, Known: true}
+		case "discharging":
+			charging = Truth{Value: false, Known: true}
+			discharging = Truth{Value: true, Known: true}
+		case "floating", "resting":
+			charging = Truth{Value: false, Known: true}
+			discharging = Truth{Value: false, Known: true}
+		default:
+			state.Issues = append(state.Issues, "invalid-battery-charger-status")
+			return
+		}
+	}
+
+	if legacyCharging && legacyDischarging {
+		state.Issues = append(state.Issues, "conflicting-charge-status")
+		return
+	}
+	if !modernPresent {
+		switch {
+		case legacyCharging:
+			state.Status.Charging = Truth{Value: true, Known: true}
+			state.Status.Discharging = Truth{Value: false, Known: true}
+		case legacyDischarging:
+			state.Status.Charging = Truth{Value: false, Known: true}
+			state.Status.Discharging = Truth{Value: true, Known: true}
+		}
+		return
+	}
+
+	if (legacyCharging && !charging.Value) || (legacyDischarging && !discharging.Value) {
+		state.Issues = append(state.Issues, "conflicting-charge-status")
+		return
+	}
+	state.Status.Charging = charging
+	state.Status.Discharging = discharging
+}
+
+func statusHasToken(tokens []string, want string) bool {
+	for _, token := range tokens {
+		if token == want {
+			return true
+		}
+	}
+	return false
 }
 
 func knownStatusFlag(tokens map[string]struct{}, name string) Truth {
@@ -537,10 +652,79 @@ func mapMeasurements(state *State, variables map[string]string) {
 	state.Electrical.InputVoltage = measurement(variables, "input.voltage", 0, 1000, &state.Issues)
 	state.Electrical.OutputVoltage = measurement(variables, "output.voltage", 0, 1000, &state.Issues)
 	state.Electrical.OutputCurrent = measurement(variables, "output.current", 0, 10000, &state.Issues)
-	state.Electrical.OutputPowerW = measurement(variables, "ups.realpower", 0, maxObservedPowerW, &state.Issues)
-	state.Electrical.OutputPowerNominalW = measurement(variables, "ups.realpower.nominal", 0, maxObservedPowerW, &state.Issues)
-	state.Electrical.OutputPowerFactor = measurement(variables, "output.powerfactor", 0, 1.5, &state.Issues)
+	state.Electrical.OutputPowerW = aliasedPowerMeasurement(variables, "ups.realpower", "output.realpower", true, &state.Issues)
+	state.Electrical.OutputPowerNominalW = aliasedPowerMeasurement(variables, "ups.realpower.nominal", "output.realpower.nominal", false, &state.Issues)
+	state.Electrical.OutputApparentPowerVA = aliasedPowerMeasurement(variables, "ups.power", "output.power", true, &state.Issues)
+	state.Electrical.OutputApparentPowerNominalVA = aliasedPowerMeasurement(variables, "ups.power.nominal", "output.power.nominal", false, &state.Issues)
+	state.Electrical.OutputPowerFactor = outputPowerFactor(variables, state.Electrical, &state.Issues)
 	state.Electrical.LoadPercent = measurement(variables, "ups.load", 0, 100, &state.Issues)
+}
+
+func aliasedPowerMeasurement(variables map[string]string, primary, alternate string, allowZero bool, issues *[]string) Measurement {
+	primaryRaw, primaryPresent := variables[primary]
+	alternateRaw, alternatePresent := variables[alternate]
+	if !primaryPresent && !alternatePresent {
+		return Measurement{}
+	}
+
+	primaryValue, primaryValid := Measurement{}, true
+	if primaryPresent {
+		primaryValue, primaryValid = parseMeasurementValue(primaryRaw, 0, maxObservedPower)
+		if primaryValid && !allowZero && primaryValue.Value == 0 {
+			primaryValid = false
+		}
+		if !primaryValid {
+			*issues = append(*issues, "invalid-"+strings.ReplaceAll(primary, ".", "-"))
+		}
+	}
+	alternateValue, alternateValid := Measurement{}, true
+	if alternatePresent {
+		alternateValue, alternateValid = parseMeasurementValue(alternateRaw, 0, maxObservedPower)
+		if alternateValid && !allowZero && alternateValue.Value == 0 {
+			alternateValid = false
+		}
+		if !alternateValid {
+			*issues = append(*issues, "invalid-"+strings.ReplaceAll(alternate, ".", "-"))
+		}
+	}
+	if !primaryValid || !alternateValid {
+		return Measurement{}
+	}
+	if primaryPresent && alternatePresent {
+		if primaryValue.Value != alternateValue.Value {
+			*issues = append(*issues, "conflicting-"+strings.ReplaceAll(primary, ".", "-"))
+			return Measurement{}
+		}
+		return primaryValue
+	}
+	if primaryPresent {
+		return primaryValue
+	}
+	return alternateValue
+}
+
+func outputPowerFactor(variables map[string]string, electrical Electrical, issues *[]string) Measurement {
+	if raw, present := variables["output.powerfactor"]; present {
+		value, valid := parseMeasurementValue(raw, 0, 1)
+		if !valid {
+			*issues = append(*issues, "invalid-output-powerfactor")
+			return Measurement{}
+		}
+		return value
+	}
+	if !electrical.OutputPowerW.Known || !electrical.OutputApparentPowerVA.Known || electrical.OutputApparentPowerVA.Value == 0 {
+		return Measurement{}
+	}
+	if electrical.OutputPowerW.Value > electrical.OutputApparentPowerVA.Value {
+		*issues = append(*issues, "invalid-derived-output-powerfactor")
+		return Measurement{}
+	}
+	value := electrical.OutputPowerW.Value / electrical.OutputApparentPowerVA.Value
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
+		*issues = append(*issues, "invalid-derived-output-powerfactor")
+		return Measurement{}
+	}
+	return Measurement{Value: value, Known: true}
 }
 
 func mapOutletTelemetry(state *State, variables map[string]string) {
@@ -591,8 +775,8 @@ func mapOutletTelemetry(state *State, variables map[string]string) {
 		}
 		outlet.Voltage = measurement(variables, prefix+"voltage", 0, 1000, &state.Issues)
 		outlet.Current = measurement(variables, prefix+"current", 0, 10000, &state.Issues)
-		outlet.PowerW = measurement(variables, prefix+"realpower", 0, maxObservedPowerW, &state.Issues)
-		outlet.PowerFactor = measurement(variables, prefix+"powerfactor", 0, 1.5, &state.Issues)
+		outlet.PowerW = measurement(variables, prefix+"realpower", 0, maxObservedPower, &state.Issues)
+		outlet.PowerFactor = measurement(variables, prefix+"powerfactor", 0, 1, &state.Issues)
 		// Voltage alone does not prove a load/power meter. Apparent power is
 		// enough to advertise metering, but is not mislabeled as real watts.
 		_, hasCurrent := variables[prefix+"current"]
@@ -602,7 +786,7 @@ func mapOutletTelemetry(state *State, variables map[string]string) {
 	}
 }
 
-func mapGroupRelayStates(state *State, variables map[string]string) {
+func mapGroupRelayStates(state *State) {
 	for groupIndex := range state.Groups {
 		group := &state.Groups[groupIndex]
 		members := make([]Outlet, 0, len(group.OutletIndices))
@@ -616,19 +800,23 @@ func mapGroupRelayStates(state *State, variables map[string]string) {
 			group.RelayState = derivedState
 			continue
 		}
-		groupVariable := fmt.Sprintf("outlet.group.%d.status", group.SourceIndex)
-		if raw, ok := variables[groupVariable]; ok {
-			groupState := parseRelay(raw)
-			if groupState == RelayUnknown {
-				state.Issues = append(state.Issues, fmt.Sprintf("invalid-relay-group-%d-status", group.Index))
+		if group.SourceIndex > len(state.NativeGroups) {
+			group.RelayState = RelayUnknown
+			state.Issues = append(state.Issues, fmt.Sprintf("invalid-relay-group-%d-source", group.Index))
+			continue
+		}
+		nativeGroup := state.NativeGroups[group.SourceIndex-1]
+		if nativeGroup.RelayStatePresent {
+			if nativeGroup.RelayState == RelayUnknown {
+				group.RelayState = RelayUnknown
 				continue
 			}
-			if relayEvidenceConflicts(members, groupState) {
+			if relayEvidenceConflicts(members, nativeGroup.RelayState) {
 				group.RelayState = RelayUnknown
 				state.Issues = append(state.Issues, fmt.Sprintf("conflicting-relay-group-%d-status", group.Index))
 				continue
 			}
-			group.RelayState = groupState
+			group.RelayState = nativeGroup.RelayState
 			continue
 		}
 		group.RelayState = derivedState
@@ -713,10 +901,18 @@ func measurement(variables map[string]string, name string, minimum, maximum floa
 	if !exists || strings.TrimSpace(raw) == "" {
 		return Measurement{}
 	}
-	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < minimum || value > maximum {
+	value, valid := parseMeasurementValue(raw, minimum, maximum)
+	if !valid {
 		*issues = append(*issues, "invalid-"+strings.ReplaceAll(name, ".", "-"))
 		return Measurement{}
 	}
-	return Measurement{Value: value, Known: true}
+	return value
+}
+
+func parseMeasurementValue(raw string, minimum, maximum float64) (Measurement, bool) {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < minimum || value > maximum {
+		return Measurement{}, false
+	}
+	return Measurement{Value: value, Known: true}, true
 }

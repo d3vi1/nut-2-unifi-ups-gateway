@@ -74,6 +74,11 @@ Synology APC driver, which publishes no `outlet.*` variables. The dynamic path
 is **CANDIDATE**: it is unit-testable but has not yet been accepted live by
 Network with a topology-capable NUT driver.
 
+A valid `outlet.group.count` without `outlet.count` is not discarded, but it
+is not topology either: the bounded native group rows live in a separate
+partial-observation table. With no proven membership, they cannot alter the
+carrier fallback, seed its relay states, or become UniFi outlet capabilities.
+
 The logical project name may be described as `NUTUPS`, but the gateway does not
 send `model="NUTUPS"`. The stock Network registry and dispatch path require a
 known model identity; unknown names reach the unknown-device path. `USWDA26`
@@ -86,10 +91,17 @@ Surge In/Out. Those categories are not computed from `outlet_table` or
 `outlet_caps`; a NUT projection cannot override them without a neutral
 controller model.
 
-UPS-wide electrical data follows units, not visual convenience. Direct
-`ups.realpower` and `ups.realpower.nominal` become output and budget watts.
-`output.current` is copied with the precision NUT supplied. Apparent VA, load
-percentage, and voltage multiplied by current are not presented as real watts.
+UPS-wide electrical data follows units, not visual convenience. Real watts use
+the ordered aliases `ups.realpower`/`output.realpower`; nominal real watts use
+their `.nominal` forms. Apparent VA uses the corresponding `ups.power` and
+`output.power` aliases and is never sent in a watt field. Equal aliases are
+accepted, while conflicts or malformed present values fail closed. A direct
+`output.powerfactor` wins; only when it is absent may valid same-snapshot W and
+VA derive `W/VA`. `output.current` keeps the precision NUT supplied. Load,
+voltage multiplied by current, nominal VA, and power factor never fabricate
+watts. Modern `battery.charger.status` is reconciled with legacy
+`CHRG`/`DISCHRG`; absence does not silently mean false and contradictions omit
+charging state without making the whole UPS unavailable.
 
 ## Power-write boundary
 
