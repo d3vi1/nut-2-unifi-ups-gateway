@@ -139,6 +139,39 @@ func TestReadOnlyProjectionUsesDirectNominalWattsAndHidesUnsupportedControls(t *
 	}
 }
 
+func TestEnabledNUTBeeperProjectsAsEnabled(t *testing.T) {
+	document := projectedPayloadDocument(t, model.State{
+		Availability: model.AvailabilityAvailable,
+		BeeperStatus: model.BeeperStatusEnabled,
+	})
+
+	beepEnabled, exists := document["beep_enabled"]
+	if !exists {
+		t.Fatal("known enabled NUT beeper state was omitted from the projected payload")
+	}
+	if beepEnabled != true {
+		t.Fatalf("known enabled NUT beeper state projected as %v, want true", beepEnabled)
+	}
+}
+
+func TestDisabledNUTServerAdvertisementIsAbsentFromProjection(t *testing.T) {
+	configuration := baseConfig(t)
+	if configuration.UniFi.NUTServer.Enabled {
+		t.Fatal("test configuration unexpectedly enables downstream NUT server advertisement")
+	}
+	document := projectedPayloadDocumentForConfiguration(t, configuration, model.State{
+		Availability: model.AvailabilityAvailable,
+	})
+
+	if _, exists := document["nut_server"]; exists {
+		t.Fatalf("disabled downstream NUT server was projected: %v", document["nut_server"])
+	}
+	smartPower := int64(document["smart_power_caps"].(float64))
+	if smartPower&inform.SmartPowerCapabilityNUTInformationAccess != 0 {
+		t.Fatalf("disabled downstream NUT server advertised NUT information access: %#x", smartPower)
+	}
+}
+
 func TestReadOnlySmartPowerMaskIsCarrierSpecific(t *testing.T) {
 	observation := model.State{Availability: model.AvailabilityAvailable}
 	for _, profile := range []string{inform.ModelUPS2UEU, inform.ModelUPS2UProEU} {

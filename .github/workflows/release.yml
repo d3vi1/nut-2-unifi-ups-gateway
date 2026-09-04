@@ -3,54 +3,54 @@ name: Publish container
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact SemVer release tag, for example v0.9.0
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: publish-${{ github.event_name == 'workflow_dispatch' && 'release' || github.ref }}
   cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/d3vi1/nut-2-unifi-ups-gateway
+  N2U_RELEASE_PACKAGE: nut-2-unifi-ups-gateway
+  N2U_RELEASE_TAG: ${{ inputs.release_tag }}
 
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
     steps:
+      - name: Refuse every automatic release rerun
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          if [[ "$GITHUB_RUN_ATTEMPT" != "1" ]]; then
+            echo "Release workflow reruns are intentionally disabled; inspect partial external state and use a new version." >&2
+            exit 1
+          fi
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.1"
           check-latest: false
           cache: true
-      - name: Validate release tag
-        if: github.ref_type == 'tag'
-        shell: bash
-        run: |
-          semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
-          if [[ ! "$GITHUB_REF_NAME" =~ $semver_re ]]; then
-            echo "Tag must be a SemVer release such as v1.2.3" >&2
-            exit 1
-          fi
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            prerelease=${GITHUB_REF_NAME#*-}
-            IFS=. read -ra identifiers <<< "$prerelease"
-            for identifier in "${identifiers[@]}"; do
-              if [[ "$identifier" =~ ^[0-9]+$ && ${#identifier} -gt 1 && "$identifier" == 0* ]]; then
-                echo "Numeric prerelease identifiers must not contain leading zeroes" >&2
-                exit 1
-              fi
-            done
-          fi
-      - name: Require a public repository for tagged releases
-        if: github.ref_type == 'tag'
+      - name: Require the live release trust root
+        if: github.event_name == 'workflow_dispatch'
         env:
-          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
-        shell: bash
-        run: |
-          if [[ "$REPOSITORY_VISIBILITY" != "public" ]]; then
-            echo "Make the repository public before pushing a release tag." >&2
-            exit 1
-          fi
+          GH_TOKEN: ${{ github.token }}
+          N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
+        run: go run ./cmd/releaseguard trust
       - name: Verify formatting
         run: test -z "$(gofmt -l .)"
       - name: Test with race detector
@@ -60,16 +60,17 @@ jobs:
       - name: Verify four target architectures
         run: go test ./internal/buildtest -run TestCrossCompile -count=1
 
-  publish:
+  publish-edge:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: verify
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
-    outputs:
-      image_digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - name: Set up immutable Buildx and BuildKit
         id: buildx
         uses: ./.github/actions/setup-pinned-buildx
@@ -79,18 +80,16 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compute image metadata
+      - name: Compute edge metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ghcr.io/d3vi1/nut-2-unifi-ups-gateway
+          images: ${{ env.IMAGE_NAME }}
           flavor: |
             latest=false
           tags: |
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}}
-      - name: Build and push image with SBOM and provenance
-        id: push
+            type=raw,value=edge
+      - name: Build and push edge image with SBOM and provenance
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           builder: ${{ steps.buildx.outputs.builder }}
@@ -100,7 +99,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=edge
             REVISION=${{ github.sha }}
             BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
           provenance: mode=max
@@ -108,52 +107,358 @@ jobs:
             type=sbom,generator=docker.io/docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
           no-cache: true
 
-  publish-release:
-    if: github.ref_type == 'tag'
-    needs: publish
+  reserve-release:
+    if: github.event_name == 'workflow_dispatch' && github.run_attempt == 1
+    needs: verify
     runs-on: ubuntu-24.04
     permissions:
-      attestations: write
       contents: write
-      id-token: write
-      packages: write
-    env:
-      IMAGE_NAME: ghcr.io/d3vi1/nut-2-unifi-ups-gateway
-      IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+      packages: read
+    outputs:
+      release_id: ${{ steps.reserve.outputs.release_id }}
+      oci_tag: ${{ steps.reserve.outputs.oci_tag }}
+      reservation_attempt: ${{ steps.reserve.outputs.reservation_attempt }}
     steps:
+      - name: Require the original release attempt
+        shell: bash
+        run: |
+          if [[ "$GITHUB_RUN_ATTEMPT" != "1" ]]; then
+            echo "Release reservation is forbidden during a rerun." >&2
+            exit 1
+          fi
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - name: Require the public release trust root
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          check-latest: false
+          cache: true
+      - name: Atomically reserve the version tag and create its owned draft
+        id: reserve
         env:
-          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          GH_TOKEN: ${{ github.token }}
+          N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
+        run: go run ./cmd/releaseguard reserve
+
+  publish-release-image:
+    if: github.event_name == 'workflow_dispatch' && github.run_attempt == 1
+    needs: [verify, reserve-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      image_digest: ${{ steps.publication.outputs.image_digest }}
+      attestation_id: ${{ steps.publication.outputs.attestation_id }}
+      attestation_url: ${{ steps.publication.outputs.attestation_url }}
+      publication_attempt: ${{ steps.publication.outputs.publication_attempt }}
+    steps:
+      - name: Refuse missing, stale, or rerun reservation state
+        env:
+          RESERVATION_ATTEMPT: ${{ needs.reserve-release.outputs.reservation_attempt }}
         shell: bash
         run: |
-          if [[ "$REPOSITORY_VISIBILITY" != "public" ]]; then
-            echo "Tagged releases require a public repository so image attestations are available." >&2
+          if [[ "$GITHUB_RUN_ATTEMPT" != "1" || "$RESERVATION_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo "Release image publication requires the reservation from this original attempt." >&2
             exit 1
           fi
-      - name: Validate published image digest
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          check-latest: false
+          cache: true
+      - name: Verify the owned empty reservation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
+          N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
+        run: go run ./cmd/releaseguard verify-reserved
+      - name: Set up immutable Buildx and BuildKit
+        id: buildx
+        uses: ./.github/actions/setup-pinned-buildx
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute release metadata
+        id: release
         shell: bash
         run: |
-          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "The multi-platform build did not return a valid sha256 manifest digest." >&2
+          set -euo pipefail
+          version=${N2U_RELEASE_TAG#v}
+          build_date=$(git show -s --format=%cI "$GITHUB_SHA")
+          {
+            printf 'version=%s\n' "$version"
+            printf 'build_date=%s\n' "$build_date"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build and push release image with SBOM and provenance
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          builder: ${{ steps.buildx.outputs.builder }}
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/386
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.reserve-release.outputs.oci_tag }}
+          labels: |
+            org.opencontainers.image.title=NUT 2 UniFi UPS Gateway
+            org.opencontainers.image.description=Read-only-by-default NUT to UniFi UPS compatibility gateway
+            org.opencontainers.image.source=https://github.com/d3vi1/nut-2-unifi-ups-gateway
+            org.opencontainers.image.licenses=GPL-2.0-only
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.release.outputs.build_date }}
+          build-args: |
+            VERSION=${{ steps.release.outputs.version }}
+            REVISION=${{ github.sha }}
+            BUILD_DATE=${{ steps.release.outputs.build_date }}
+          provenance: mode=max
+          attests: |
+            type=sbom,generator=docker.io/docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          no-cache: true
+      - name: Prove the permanent OCI anchor resolves to the produced digest
+        env:
+          EXPECTED_DIGEST: ${{ steps.push.outputs.digest }}
+          OCI_TAG: ${{ needs.reserve-release.outputs.oci_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "The multi-platform build did not return a valid manifest digest." >&2
             exit 1
           fi
-      - name: Attest published image digest
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+          index_path="$RUNNER_TEMP/n2u-release-index.json"
+          docker buildx imagetools inspect "$IMAGE_NAME:$OCI_TAG" --raw > "$index_path"
+          actual_digest="sha256:$(sha256sum "$index_path" | awk '{print $1}')"
+          if [[ "$actual_digest" != "$EXPECTED_DIGEST" ]]; then
+            echo "The permanent OCI anchor does not resolve to the produced manifest digest." >&2
+            exit 1
+          fi
+          N2U_OCI_INDEX_PATH="$index_path" N2U_IMAGE_DIGEST="$EXPECTED_DIGEST" \
+            go run ./cmd/releaseguard verify-index
+          printf 'N2U_OCI_INDEX_PATH=%s\n' "$index_path" >> "$GITHUB_ENV"
+      - name: Attest the published image digest
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
-          subject-digest: ${{ env.IMAGE_DIGEST }}
+          subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+          create-storage-record: false
+      - name: Install the pinned GitHub attestation verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh_version="2.100.0"
+          gh_sha256="e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be"
+          trusted_root_commit="c9bda74ad2221f938f7d2e0295ca3aad2da710a8"
+          trusted_root_sha256="6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66"
+          trusted_root_jsonl_sha256="3c2cc7f357dc064ec527fdcd78da6e9245c21a381e1abaa0f2b62b186bcac1a1"
+          archive="$RUNNER_TEMP/gh_${gh_version}_linux_amd64.tar.gz"
+          install_root="$RUNNER_TEMP/n2u-gh-attestation"
+          verifier="$install_root/gh"
+          trusted_root_source="$RUNNER_TEMP/n2u-public-good-trusted-root.json"
+          trusted_root_jsonl="$RUNNER_TEMP/n2u-public-good-trusted-root.jsonl"
+
+          curl --fail --location \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --tlsv1.2 \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 20 \
+            --max-time 300 \
+            --output "$archive" \
+            "https://github.com/cli/cli/releases/download/v${gh_version}/gh_${gh_version}_linux_amd64.tar.gz"
+          printf '%s  %s\n' "$gh_sha256" "$archive" | sha256sum --check --strict -
+          curl --fail --location \
+            --proto '=https' \
+            --proto-redir '=https' \
+            --tlsv1.2 \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 20 \
+            --max-time 60 \
+            --output "$trusted_root_source" \
+            "https://raw.githubusercontent.com/sigstore/root-signing/${trusted_root_commit}/targets/trusted_root.json"
+          mkdir -p "$install_root"
+          tar --extract --gzip --file "$archive" --directory "$install_root" \
+            --strip-components=2 "gh_${gh_version}_linux_amd64/bin/gh"
+          if [[ "$("$verifier" version | awk 'NR == 1 { print $3 }')" != "$gh_version" ]]; then
+            echo "The attestation verifier version does not match its reviewed archive." >&2
+            exit 1
+          fi
+          printf '%s  %s\n' "$trusted_root_sha256" "$trusted_root_source" | sha256sum --check --strict -
+          jq --compact-output . "$trusted_root_source" > "$trusted_root_jsonl"
+          if [[ "$(wc -l < "$trusted_root_jsonl")" != "1" || ! -s "$trusted_root_jsonl" ]]; then
+            echo "The pinned Sigstore trusted root did not produce one JSONL record." >&2
+            exit 1
+          fi
+          printf '%s  %s\n' "$trusted_root_jsonl_sha256" "$trusted_root_jsonl" | sha256sum --check --strict -
+          {
+            printf 'N2U_GH_ATTEST=%s\n' "$verifier"
+            printf 'N2U_SIGSTORE_TRUST_ROOT=%s\n' "$trusted_root_jsonl"
+          } >> "$GITHUB_ENV"
+      - name: Verify attestation roots and exact workflow identity
+        env:
+          N2U_ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          N2U_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+          verification="$RUNNER_TEMP/n2u-attestation-verification.json"
+          "$N2U_GH_ATTEST" attestation verify "$N2U_OCI_INDEX_PATH" \
+            --digest-alg sha256 \
+            --repo d3vi1/nut-2-unifi-ups-gateway \
+            --bundle "$N2U_ATTESTATION_BUNDLE" \
+            --custom-trusted-root "$N2U_SIGSTORE_TRUST_ROOT" \
+            --predicate-type https://slsa.dev/provenance/v1 \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --cert-identity "https://github.com/d3vi1/nut-2-unifi-ups-gateway/.github/workflows/release.yml@refs/heads/main" \
+            --source-ref refs/heads/main \
+            --source-digest "$GITHUB_SHA" \
+            --signer-digest "$GITHUB_SHA" \
+            --deny-self-hosted-runners \
+            --format json > "$verification"
+          jq --exit-status 'length == 1' "$verification" > /dev/null
+      - name: Verify exact attestation semantics and remote bindings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N2U_ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          N2U_ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
+          N2U_ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+          N2U_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          N2U_PUBLICATION_ATTEMPT: ${{ github.run_attempt }}
+          N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
+          N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
+        run: go run ./cmd/releaseguard verify-attestation
+      - name: Export bound publication identity
+        id: publication
+        env:
+          ATTESTATION_ID: ${{ steps.attest.outputs.attestation-id }}
+          ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ||
+                ! "$ATTESTATION_ID" =~ ^[1-9][0-9]*$ ||
+                ! "$ATTESTATION_URL" =~ ^https://github\.com/d3vi1/nut-2-unifi-ups-gateway/attestations/[1-9][0-9]*$ ]]; then
+            echo "Image or attestation output is malformed; refusing to continue." >&2
+            exit 1
+          fi
+          {
+            printf 'image_digest=%s\n' "$IMAGE_DIGEST"
+            printf 'attestation_id=%s\n' "$ATTESTATION_ID"
+            printf 'attestation_url=%s\n' "$ATTESTATION_URL"
+            printf 'publication_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_OUTPUT"
+
+  bind-release:
+    if: github.event_name == 'workflow_dispatch' && github.run_attempt == 1
+    needs: [reserve-release, publish-release-image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: read
+    outputs:
+      binding_attempt: ${{ steps.bind.outputs.binding_attempt }}
+    steps:
+      - name: Refuse missing, stale, or rerun publication state
+        env:
+          PUBLICATION_ATTEMPT: ${{ needs.publish-release-image.outputs.publication_attempt }}
+          RESERVATION_ATTEMPT: ${{ needs.reserve-release.outputs.reservation_attempt }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_RUN_ATTEMPT" != "1" ||
+                "$RESERVATION_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ||
+                "$PUBLICATION_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo "Release binding requires reservation and image outputs from this original attempt." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          check-latest: false
+          cache: true
+      - name: Bind image and attestation to the reserved draft
+        id: bind
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N2U_ATTESTATION_ID: ${{ needs.publish-release-image.outputs.attestation_id }}
+          N2U_ATTESTATION_URL: ${{ needs.publish-release-image.outputs.attestation_url }}
+          N2U_IMAGE_DIGEST: ${{ needs.publish-release-image.outputs.image_digest }}
+          N2U_PUBLICATION_ATTEMPT: ${{ needs.publish-release-image.outputs.publication_attempt }}
+          N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
+          N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run ./cmd/releaseguard bind
+          printf 'binding_attempt=%s\n' "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+  finalize-release:
+    if: github.event_name == 'workflow_dispatch' && github.run_attempt == 1
+    needs: [reserve-release, publish-release-image, bind-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: read
+    env:
+      IMAGE_DIGEST: ${{ needs.publish-release-image.outputs.image_digest }}
+      OCI_TAG: ${{ needs.reserve-release.outputs.oci_tag }}
+    steps:
+      - name: Refuse missing, stale, or rerun bound state
+        env:
+          BINDING_ATTEMPT: ${{ needs.bind-release.outputs.binding_attempt }}
+          PUBLICATION_ATTEMPT: ${{ needs.publish-release-image.outputs.publication_attempt }}
+          RESERVATION_ATTEMPT: ${{ needs.reserve-release.outputs.reservation_attempt }}
+        shell: bash
+        run: |
+          if [[ "$GITHUB_RUN_ATTEMPT" != "1" ||
+                "$RESERVATION_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ||
+                "$PUBLICATION_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ||
+                "$BINDING_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo "Release finalization requires every output from this original attempt." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          check-latest: false
+          cache: true
+      - name: Verify the bound draft before assembling assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N2U_ATTESTATION_ID: ${{ needs.publish-release-image.outputs.attestation_id }}
+          N2U_ATTESTATION_URL: ${{ needs.publish-release-image.outputs.attestation_url }}
+          N2U_IMAGE_DIGEST: ${{ needs.publish-release-image.outputs.image_digest }}
+          N2U_PUBLICATION_ATTEMPT: ${{ needs.publish-release-image.outputs.publication_attempt }}
+          N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
+          N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
+        run: go run ./cmd/releaseguard verify-bound
       - name: Assemble digest-pinned Synology release bundle
         id: bundle
         shell: bash
         run: |
           set -euo pipefail
 
-          release_version=${GITHUB_REF_NAME#v}
-          bundle_name="nut-2-unifi-ups-gateway-${GITHUB_REF_NAME}-synology"
+          bundle_name="nut-2-unifi-ups-gateway-${N2U_RELEASE_TAG}-synology"
           staging_root="$RUNNER_TEMP/n2u-release"
           bundle_dir="$staging_root/$bundle_name"
           assets_dir="$staging_root/assets"
@@ -164,7 +469,7 @@ jobs:
           cp deploy/synology/compose.yaml "$bundle_dir/compose.yaml"
           cp deploy/synology/compose.auth.yaml "$bundle_dir/compose.auth.yaml"
           {
-            printf '# Generated for %s; keep the OCI manifest digest pinned.\n' "$GITHUB_REF_NAME"
+            printf '# Generated for %s; keep the OCI manifest digest pinned.\n' "$N2U_RELEASE_TAG"
             awk -v image="$IMAGE_NAME@$IMAGE_DIGEST" '
               /^N2U_IMAGE=/ {
                 replaced++
@@ -178,20 +483,15 @@ jobs:
           chmod 600 "$bundle_dir/.env"
 
           {
-            printf 'Release tag: %s\n' "$GITHUB_REF_NAME"
+            printf 'Release tag: %s\n' "$N2U_RELEASE_TAG"
             printf 'Source commit: %s\n' "$GITHUB_SHA"
             printf 'Image: %s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST"
+            printf 'Retention anchor: %s:%s\n' "$IMAGE_NAME" "$OCI_TAG"
+            printf 'Workflow run: %s (attempt %s)\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
           } > "$bundle_dir/RELEASE-METADATA.txt"
 
           source_date_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
-          tar --sort=name \
-            --mtime="@$source_date_epoch" \
-            --owner=0 \
-            --group=0 \
-            --numeric-owner \
-            -czf "$bundle_path" \
-            -C "$staging_root" \
-            "$bundle_name"
+          tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner -czf "$bundle_path" -C "$staging_root" "$bundle_name"
           (
             cd "$assets_dir"
             sha256sum "$bundle_name.tar.gz" > "$bundle_name.SHA256SUMS"
@@ -201,53 +501,46 @@ jobs:
           {
             printf 'bundle_path=%s\n' "$bundle_path"
             printf 'checksum_path=%s\n' "$checksum_path"
-            printf 'release_version=%s\n' "$release_version"
           } >> "$GITHUB_OUTPUT"
-      - name: Create draft release with verified assets
+      - name: Upload the exact release assets without replacement
         env:
-          BUNDLE_PATH: ${{ steps.bundle.outputs.bundle_path }}
-          CHECKSUM_PATH: ${{ steps.bundle.outputs.checksum_path }}
-          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ steps.bundle.outputs.release_version }}
+          N2U_ATTESTATION_ID: ${{ needs.publish-release-image.outputs.attestation_id }}
+          N2U_ATTESTATION_URL: ${{ needs.publish-release-image.outputs.attestation_url }}
+          N2U_IMAGE_DIGEST: ${{ needs.publish-release-image.outputs.image_digest }}
+          N2U_PUBLICATION_ATTEMPT: ${{ needs.publish-release-image.outputs.publication_attempt }}
+          N2U_RELEASE_ASSETS: |-
+            ${{ steps.bundle.outputs.bundle_path }}
+            ${{ steps.bundle.outputs.checksum_path }}
+          N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
+          N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
+        run: go run ./cmd/releaseguard upload-assets
+      - name: Set up immutable Buildx for final OCI readback
+        id: buildx
+        uses: ./.github/actions/setup-pinned-buildx
+      - name: Reconfirm the public OCI anchor immediately before publication
         shell: bash
         run: |
           set -euo pipefail
-
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "A release already exists for $GITHUB_REF_NAME; refusing to replace its assets." >&2
+          index_path="$RUNNER_TEMP/n2u-final-index.json"
+          docker buildx imagetools inspect "$IMAGE_NAME:$OCI_TAG" --raw > "$index_path"
+          actual_digest="sha256:$(sha256sum "$index_path" | awk '{print $1}')"
+          if [[ "$actual_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "The permanent OCI anchor changed before Release publication." >&2
             exit 1
           fi
-
-          notes_file="$RUNNER_TEMP/n2u-release-notes.md"
-          {
-            printf '# NUT 2 UniFi UPS Gateway %s\n\n' "$RELEASE_VERSION"
-            printf -- '- Source tag: %s\n' "$GITHUB_REF_NAME"
-            printf -- '- Source commit: %s\n' "$GITHUB_SHA"
-            printf -- '- Multi-platform image: %s@%s\n\n' "$IMAGE_NAME" "$IMAGE_DIGEST"
-            printf 'The Synology bundle contains Compose files and a generated .env pinned to that OCI manifest digest. Verify the bundle with the attached SHA256SUMS before extraction. The checksum detects transfer or storage corruption; its trust root is this GitHub Release and the repository controls protecting it.\n'
-          } > "$notes_file"
-
-          release_args=(
-            "$GITHUB_REF_NAME"
-            --draft
-            --verify-tag
-            --title "NUT 2 UniFi UPS Gateway $RELEASE_VERSION"
-            --notes-file "$notes_file"
-          )
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            release_args+=(--prerelease)
-          fi
-          gh release create "${release_args[@]}" "$BUNDLE_PATH" "$CHECKSUM_PATH"
-      - name: Publish completed release
+          N2U_OCI_INDEX_PATH="$index_path" N2U_IMAGE_DIGEST="$IMAGE_DIGEST" \
+            go run ./cmd/releaseguard verify-index
+      - name: Publish the verified immutable Release
         env:
-          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh release edit "$GITHUB_REF_NAME" --draft=false
-          if [[ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" != "false" ]]; then
-            echo "The GitHub Release is still a draft." >&2
-            exit 1
-          fi
+          N2U_ATTESTATION_ID: ${{ needs.publish-release-image.outputs.attestation_id }}
+          N2U_ATTESTATION_URL: ${{ needs.publish-release-image.outputs.attestation_url }}
+          N2U_IMAGE_DIGEST: ${{ needs.publish-release-image.outputs.image_digest }}
+          N2U_PUBLICATION_ATTEMPT: ${{ needs.publish-release-image.outputs.publication_attempt }}
+          N2U_RELEASE_ASSETS: |-
+            ${{ steps.bundle.outputs.bundle_path }}
+            ${{ steps.bundle.outputs.checksum_path }}
+          N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
+          N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
+        run: go run ./cmd/releaseguard publish

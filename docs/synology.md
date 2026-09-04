@@ -66,11 +66,14 @@ instead of substituting a mutable tag.
 
 The checksum detects transfer or storage corruption, but does not independently
 authenticate a compromised GitHub Release because both files have the same
-trust root. Before v0.9.0 is published, both the repository and GHCR package
-must be public, GitHub immutable releases must be enabled, and a repository
-ruleset or tag-protection rule must cover `v*`. These service settings are a
+trust root. Every release requires a public repository and GHCR package,
+GitHub immutable releases, a protected `main`, and a no-bypass ruleset that
+blocks updates and deletion for `v*` tags. These service settings are a
 mandatory external release gate: the workflow cannot safely substitute for
-them.
+them. The controller runs only by explicit dispatch from live `main`,
+atomically reserves the version tag and creates its owned draft before the
+image, and rejects reruns and conflicting external state. No `:0.9.0` or other
+human-readable release image alias is published.
 
 After those checks succeed, extract the bundle:
 

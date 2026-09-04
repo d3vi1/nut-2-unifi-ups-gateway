@@ -64,9 +64,26 @@ All notable changes are documented here. The project follows
   drift behind mutable defaults.
 - Publishing builds are explicitly cache-cold and the official BuildKit Syft
   SBOM generator is pinned to a reviewed version and OCI index digest.
-- Published image aliases are deliberately non-floating: `edge` belongs only to
-  `main`, release tags publish only their exact SemVer, and build-metadata tags
-  are rejected because OCI tag normalization is not injective.
+- Image names are deliberately non-floating: `edge` belongs only to `main`.
+  A release has no SemVer, `latest`, major, or minor OCI alias; its permanent
+  run-scoped registry tag is only a retention anchor, while the immutable
+  Release bundle uses the authoritative manifest digest.
+- The release controller runs only by explicit dispatch from the live default
+  branch. It atomically reserves the version by creating its protected source
+  tag, then creates an owned draft before touching GHCR. The tag created with
+  the ephemeral `GITHUB_TOKEN` does not trigger historical tag-push workflows.
+- Every release mutation addresses that draft by numeric ID and verifies its
+  exact repository, source SHA, run ID, attempt, OCI anchor, digest,
+  attestation, and asset set. Automatic reruns are rejected before mutation.
+- Live release checks require a public repository and package, immutable
+  Releases, SHA-pinned Actions, read-only default workflow permissions, and the
+  exact active, no-bypass `N2U release tags` update/deletion ruleset plus a
+  protected `main`. A checksum-pinned GitHub CLI verifies the exact local
+  attestation offline against a review-pinned Sigstore root and the expected
+  workflow/source identity; the local guard adds stricter provenance checks.
+  The controller also validates the exact four-platform OCI index and the
+  digest-pinned contents of the Synology archive before publication. Transport,
+  schema, authentication, timeout, or partial-state uncertainty fails closed.
 
 ## 0.1.0-alpha.1 - 2026-09-02
 

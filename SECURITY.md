@@ -65,8 +65,41 @@ administer. Coordinate any live power-path test with the operator.
 - Tagged releases provide an attested multi-platform OCI digest and a
   checksum-verified deployment bundle pinned to that digest. The supplied
   Compose file refuses to render without an explicit `N2U_IMAGE`.
-- GHCR publication uses only `edge` for `main` and the exact version for a
-  release tag; it never publishes `latest` or major/minor floating aliases.
+- GHCR publication uses `edge` only for `main`. A release publishes no
+  SemVer, `latest`, major, minor, ref, or SHA alias. Its unique run/attempt OCI
+  tag is a permanent retention anchor; consumers receive the manifest digest.
+- Releases can start only through an explicit dispatch of the workflow on the
+  live `main` tip. The controller atomically reserves the version with a
+  protected Git tag, then creates its owned draft before any registry image.
+  Its ephemeral `GITHUB_TOKEN` creates the tag without triggering tag-push
+  workflows from historical commits.
+- The release tag ruleset has no bypass actors: it permits atomic creation but
+  prevents every update or deletion. A competing creator can consume a version
+  name, but cannot substitute a source revision after the controller's exact
+  create-ref response has been accepted.
+- The reservation marker binds a numeric Release ID to the repository ID,
+  version tag, source SHA, run ID, first run attempt, permanent OCI anchor,
+  produced digest, and attestation. Every downstream mutation verifies that
+  identity and the exact expected asset set.
+- A checksum-pinned GitHub CLI independently verifies the exact local
+  attestation bundle against a review-pinned Sigstore Public Good root,
+  Fulcio, CT and Rekor, with the exact workflow, source ref/SHA, signer SHA,
+  repository, predicate, and hosted-runner policy. GitHub tokens are removed
+  from that offline verification step. The local standard-library guard then
+  adds strict numeric repository/run identity, OID, provenance-shape,
+  subject-digest, and transparency-entry binding checks. The pinned
+  attestation action remains the signer.
+- Full, failed-job, and individual-job reruns are intentionally unsupported.
+  Missing outputs, an attempt other than one, an existing tag or Release,
+  unexpected draft edits, partial assets, API ambiguity, or transport failure
+  stops before the next mutation. Recovery is an inspected maintainer action,
+  normally using a new version.
+- The live release trust root requires a public repository and GHCR package,
+  immutable GitHub Releases, an exact active `N2U release tags` ruleset with
+  update/deletion restrictions and no bypass for `refs/tags/v*`, SHA-pinned
+  Actions, read-only default workflow permissions, a protected `main`, a
+  workflow revision equal to the source revision, and a source that remains the
+  current `main` tip throughout publication.
 - Container workflows install an exact Buildx artifact only after verifying its
   reviewed SHA-256 and bootstrap BuildKit from an OCI digest. Publishing builds
   are explicitly cache-cold and the SBOM generator is pinned by OCI digest.
@@ -77,6 +110,21 @@ administer. Coordinate any live power-path test with the operator.
 
 These properties are intentional boundaries, not a claim that the software is
 free of vulnerabilities.
+
+A failed release may leave a source tag, an owned draft, a permanent
+run-scoped OCI anchor, an attestation, or a partial exact asset set. These are
+monotonic fail-closed states, not automatic retry states. The workflow never
+replaces them; recovery requires explicit maintainer inspection and normally a
+new version.
+
+Authorized repository and package writers are part of the release trust root.
+GitHub exposes no documented conditional PATCH for publishing a draft with
+attached assets, so the final validation and publication cannot be atomic
+against a separate writer changing that draft at the same instant. Release
+runs are serialized and every expected mutable field is rewritten and checked,
+but maintainers must freeze `main` plus manual Release and GHCR changes for the
+duration of the run. An owner who deliberately changes access controls or races
+publication already holds equivalent release authority.
 
 ## Network trust boundaries
 

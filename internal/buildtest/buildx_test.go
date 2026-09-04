@@ -61,10 +61,10 @@ func TestBuildxAndBuildKitAreImmutable(t *testing.T) {
 
 func TestPublishingBuildIsCacheColdAndPinsItsSBOMGenerator(t *testing.T) {
 	release := readRepositoryFile(t, ".github", "workflows", "release.yml")
-	start := strings.Index(release, "      - name: Build and push image with SBOM and provenance\n")
-	end := strings.Index(release, "\n  publish-release:\n")
+	start := strings.Index(release, "      - name: Build and push release image with SBOM and provenance\n")
+	end := strings.Index(release, "\n  bind-release:\n")
 	if start < 0 || end <= start {
-		t.Fatal("cannot isolate the publishing build step")
+		t.Fatal("cannot isolate the release publishing build step")
 	}
 	publishBuild := release[start:end]
 
@@ -75,7 +75,7 @@ func TestPublishingBuildIsCacheColdAndPinsItsSBOMGenerator(t *testing.T) {
 		"pinned SBOM generator": "type=sbom,generator=" + pinnedSBOMGenerator,
 	} {
 		if got := strings.Count(publishBuild, want); got != 1 {
-			t.Errorf("publishing build contains %d %s markers %q; want 1", got, name, want)
+			t.Errorf("release publishing build contains %d %s markers %q; want 1", got, name, want)
 		}
 	}
 	for name, forbidden := range map[string]string{
@@ -84,70 +84,28 @@ func TestPublishingBuildIsCacheColdAndPinsItsSBOMGenerator(t *testing.T) {
 		"dedicated SBOM override": "\n          sbom:",
 	} {
 		if strings.Contains(publishBuild, forbidden) {
-			t.Errorf("publishing build contains forbidden %s %q", name, forbidden)
+			t.Errorf("release publishing build contains forbidden %s %q", name, forbidden)
 		}
 	}
 }
 
-func TestPublishedImageTagsAreExactAndNonFloating(t *testing.T) {
-	release := readRepositoryFile(t, ".github", "workflows", "release.yml")
-	metadataStart := strings.Index(release, "      - name: Compute image metadata\n")
-	metadataEnd := strings.Index(release, "      - name: Build and push image with SBOM and provenance\n")
-	if metadataStart < 0 || metadataEnd <= metadataStart {
-		t.Fatal("cannot isolate the image metadata step")
-	}
-	metadata := release[metadataStart:metadataEnd]
-
-	for name, want := range map[string]string{
-		"main-only edge tag":           "type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}",
-		"exact SemVer tag":             "type=semver,pattern={{version}}",
-		"disabled implicit latest tag": "flavor: |\n            latest=false\n",
-	} {
-		if got := strings.Count(metadata, want); got != 1 {
-			t.Errorf("image metadata contains %d %s markers %q; want 1", got, name, want)
-		}
-	}
-	for name, forbidden := range map[string]string{
-		"latest alias":          "type=raw,value=latest",
-		"major/minor alias":     "pattern={{major}}.{{minor}}",
-		"ref-derived tag":       "type=ref",
-		"commit-derived tag":    "type=sha",
-		"stable classification": "steps.release.outputs",
-	} {
-		if strings.Contains(metadata, forbidden) {
-			t.Errorf("image metadata contains forbidden %s %q", name, forbidden)
-		}
-	}
-
-	validateStart := strings.Index(release, "      - name: Validate release tag\n")
-	validateEnd := strings.Index(release, "      - name: Require a public repository for tagged releases\n")
-	if validateStart < 0 || validateEnd <= validateStart {
-		t.Fatal("cannot isolate release-tag validation")
-	}
-	validateTag := release[validateStart:validateEnd]
-	wantTagRegex := "semver_re='^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*))?$'"
-	if got := strings.Count(validateTag, wantTagRegex); got != 1 {
-		t.Errorf("release validation contains %d exact no-build-metadata SemVer regexes; want 1", got)
-	}
-	if strings.Contains(release, "without_build=") {
-		t.Fatal("release validation strips SemVer build metadata instead of rejecting it")
-	}
-	if strings.Contains(release, "      - name: Classify stable release tag\n") {
-		t.Fatal("release workflow retains obsolete floating-tag classification")
-	}
-}
-
-func TestWorkflowsUseOnlyThePinnedLocalBuilder(t *testing.T) {
+func TestWorkflowsUseOnlyPinnedLocalBuilders(t *testing.T) {
 	for _, workflow := range []string{"ci.yml", "release.yml"} {
 		contents := readRepositoryFile(t, ".github", "workflows", workflow)
 		if strings.Contains(contents, remoteBuildxAction) {
 			t.Errorf("%s must not invoke the mutable remote Buildx setup action", workflow)
 		}
-		if got := strings.Count(contents, localBuildxAction); got != 1 {
-			t.Errorf("%s contains %d local Buildx setup actions; want 1", workflow, got)
+		want := 1
+		wantBindings := 1
+		if workflow == "release.yml" {
+			want = 3
+			wantBindings = 2
 		}
-		if got := strings.Count(contents, buildxBuilderBinding); got != 1 {
-			t.Errorf("%s contains %d pinned builder bindings; want 1", workflow, got)
+		if got := strings.Count(contents, localBuildxAction); got != want {
+			t.Errorf("%s contains %d local Buildx setup actions; want %d", workflow, got, want)
+		}
+		if got := strings.Count(contents, buildxBuilderBinding); got != wantBindings {
+			t.Errorf("%s contains %d pinned builder bindings; want %d", workflow, got, wantBindings)
 		}
 	}
 }
