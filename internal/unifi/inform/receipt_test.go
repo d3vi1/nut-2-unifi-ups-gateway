@@ -73,6 +73,74 @@ func TestConfigReceiptRejectsAmbiguityAndAuthoritySmuggling(t *testing.T) {
 	}
 }
 
+func TestConfigReceiptObservedOuterMetadata(t *testing.T) {
+	fields := map[string]string{"_type": "setparam", "mgmt_cfg": receiptManagement, "system_cfg": "beep.status=enabled\n", "cfgversion": "revision-b", "server_time_in_utc": "1800000000000", "blocked_sta": ""}
+	body, _ := json.Marshal(fields)
+	r, err := ClassifyConfigReceipt(body)
+	if err != nil || r.CfgVersion != "revision-b" {
+		t.Fatal("observed outer metadata rejected")
+	}
+	encoded, _ := json.Marshal(r)
+	if strings.Contains(string(encoded), "1800000000000") || strings.Contains(string(encoded), "blocked_sta") {
+		t.Fatal("outer metadata retained")
+	}
+	for name, value := range map[string]string{"cfgversion": "different", "blocked_sta": "client", "server_time_in_utc": "180000000000x"} {
+		t.Run(name, func(t *testing.T) {
+			original := fields[name]
+			defer func() { fields[name] = original }()
+			fields[name] = value
+			body, _ := json.Marshal(fields)
+			if _, err := ClassifyConfigReceipt(body); err == nil {
+				t.Fatal("invalid metadata accepted")
+			}
+		})
+	}
+	for _, stamp := range []string{"", "180000000000", "18000000000000", "+800000000000", "180000000000\n", "１８０００００００００００"} {
+		fields["server_time_in_utc"] = stamp
+		body, _ := json.Marshal(fields)
+		if _, err := ClassifyConfigReceipt(body); err == nil {
+			t.Fatal("invalid timestamp accepted")
+		}
+	}
+	for _, stamp := range []string{"0000000000000", "9999999999999"} {
+		fields["server_time_in_utc"] = stamp
+		body, _ := json.Marshal(fields)
+		if _, err := ClassifyConfigReceipt(body); err != nil {
+			t.Fatal("timestamp was interpreted as freshness")
+		}
+	}
+	for _, outer := range []string{"", "revision-B", " revision-b", "revision-b "} {
+		fields["cfgversion"] = outer
+		body, _ := json.Marshal(fields)
+		if _, err := ClassifyConfigReceipt(body); err == nil {
+			t.Fatal("outer marker mismatch accepted")
+		}
+	}
+	fields["cfgversion"] = "revision-b"
+	fields["blocked_sta"] = " "
+	body, _ = json.Marshal(fields)
+	if _, err := ClassifyConfigReceipt(body); err == nil {
+		t.Fatal("nonempty blocked list accepted")
+	}
+	for _, field := range []string{"cfgversion", "blocked_sta", "server_time_in_utc"} {
+		for _, raw := range []string{"null", "0", "false", "[]", "{}"} {
+			body := []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b","` + field + `":` + raw + `}`)
+			if _, err := ClassifyConfigReceipt(body); err == nil {
+				t.Fatal("non-string metadata accepted")
+			}
+		}
+		valid := map[string]string{"cfgversion": "b", "blocked_sta": "", "server_time_in_utc": "1800000000000"}[field]
+		body := []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b","` + field + `":"` + valid + `","` + field + `":"` + valid + `"}`)
+		if _, err := ClassifyConfigReceipt(body); err == nil {
+			t.Fatal("duplicate metadata accepted")
+		}
+		body = []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b","` + strings.ToUpper(field) + `":"` + valid + `"}`)
+		if _, err := ClassifyConfigReceipt(body); err == nil {
+			t.Fatal("case alias accepted")
+		}
+	}
+}
+
 func FuzzConfigReceiptNeverReturnsControllerMetadata(f *testing.F) {
 	f.Add([]byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=seed"}`))
 	f.Fuzz(func(t *testing.T, body []byte) {

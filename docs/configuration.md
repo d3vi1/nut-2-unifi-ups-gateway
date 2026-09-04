@@ -123,6 +123,13 @@ device MAC and HTTP controller origin, `_type=setparam`, and one valid
 inform URL changes, mode downgrades, and effectful top-level fields reject the
 receipt. Neither companion URL becomes a network destination.
 
+The observed outer JSON may also contain `cfgversion` (which must exactly match
+the management marker), `server_time_in_utc` (exactly 13 ASCII digits), and
+`blocked_sta` (only an empty string). These fields are not retained. The timestamp
+does not establish freshness, ordering, or cadence, and no client-blocking action
+is implemented. Nonempty lists, mismatches, other types, and unknown fields reject
+the receipt.
+
 An optional `system_cfg` is observed and ignored. A receipt does not claim that
 NUT-server, buzzer, relay, recovery-cycle, IP, or other settings were applied.
 Network may stop retrying a revision whose unsupported settings remain unapplied;

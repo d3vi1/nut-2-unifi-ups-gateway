@@ -86,6 +86,14 @@ in a separate private receipt file. No controller settings become executable.
 Online/rename/restart efficacy remains **CANDIDATE** pending live acceptance;
 authenticated GCM alone does not establish ordering or freshness.
 
+A subsequent scoped capture contained six top-level string fields: `_type`,
+`mgmt_cfg`, `system_cfg`, `cfgversion`, `server_time_in_utc`, and `blocked_sta`.
+Two authenticated responses were rejected by the initial three-field parser.
+The revised parser accepts the matching outer marker, a 13-digit inert timestamp,
+and an empty blocked-client string; all other top-level fields remain rejected.
+Both captured replies passed the revised parser offline. This proves syntax
+compatibility with that capture, not live Network convergence.
+
 ## Genuine firmware protocol inventory
 
 | Direction | Endpoint | Purpose | Evidence | Gateway v1 |

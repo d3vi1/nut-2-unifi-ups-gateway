@@ -175,8 +175,8 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 		"README.md":                    "bb59ffc4338a57b0a37c1a203f04ce2dd0595d290044d62e69041d7867975a4c",
 		"SECURITY.md":                  "275f4f6e2e850093ca7cd9ee87064d772384a4579f4844b336b4d3de0d6a2e7d",
 		"deploy/synology/.env.example": "3ee6debc3bf6cc0cc1e2d28c802b51a8152a06f15980356b591bef0a96862852",
-		"docs/configuration.md":        "2619aa3f69b4f50ecd99fab3b3af41ab80e001c6ae6ecdd37a397729be3ae542",
-		"docs/protocol-evidence.md":    "c03875adb716eac101415106c622ca85a4906324313057e183dd5c2a082129fa",
+		"docs/configuration.md":        "7e13d83a40e41650e76d282a08c46f0488bc8c968dac197029c0693a00e0d1c8",
+		"docs/protocol-evidence.md":    "983cc39d313bef76b49a6440bc7607767a4008c281deaa9a743b63d5e9172ff1",
 		"docs/synology.md":             "2d91d86ea1541ff617e5e9793d0042ada733ce6b416ed4b7147710a462b53788",
 	}
 	for path, want := range expected {

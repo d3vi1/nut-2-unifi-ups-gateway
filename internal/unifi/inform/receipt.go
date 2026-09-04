@@ -30,7 +30,7 @@ func ClassifyConfigReceipt(body []byte) (ConfigReceipt, error) {
 	if err != nil || opening != json.Delim('{') {
 		return ConfigReceipt{}, errConfigReceipt
 	}
-	fields := make(map[string]string, 3)
+	fields := make(map[string]string, 6)
 	for dec.More() {
 		token, err := dec.Token()
 		name, ok := token.(string)
@@ -38,7 +38,7 @@ func ClassifyConfigReceipt(body []byte) (ConfigReceipt, error) {
 			return ConfigReceipt{}, errConfigReceipt
 		}
 		switch name {
-		case "_type", "mgmt_cfg", "system_cfg":
+		case "_type", "mgmt_cfg", "system_cfg", "cfgversion", "server_time_in_utc", "blocked_sta":
 		default:
 			return ConfigReceipt{}, errConfigReceipt
 		}
@@ -110,5 +110,23 @@ func ClassifyConfigReceipt(body []byte) (ConfigReceipt, error) {
 	if version == "" {
 		return ConfigReceipt{}, errConfigReceipt
 	}
+	if outer, present := fields["cfgversion"]; present && outer != version {
+		return ConfigReceipt{}, errConfigReceipt
+	}
+	if fields["blocked_sta"] != "" {
+		return ConfigReceipt{}, errConfigReceipt
+	}
+	if stamp, present := fields["server_time_in_utc"]; present {
+		if len(stamp) != 13 {
+			return ConfigReceipt{}, errConfigReceipt
+		}
+		for _, ch := range []byte(stamp) {
+			if ch < '0' || ch > '9' {
+				return ConfigReceipt{}, errConfigReceipt
+			}
+		}
+	}
+	// Outer metadata is only syntax-checked. The management marker is the sole
+	// retained value; server time supplies neither ordering nor freshness.
 	return ConfigReceipt{CfgVersion: version, UnsupportedSettings: unsupportedControllerSettings(fields["system_cfg"])}, nil
 }

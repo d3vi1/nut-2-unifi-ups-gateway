@@ -23,9 +23,12 @@ import (
 func receiptResponse(t *testing.T, version string) []byte {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{
-		"_type":      "setparam",
-		"mgmt_cfg":   "cfgversion=" + version + "\ncapability=notif\nled_enabled=true\nmgmt_url=https://192.0.2.99/manage\nreport_crash=false\nselfrun_guest_mode=pass\nstun_url=stun://192.0.2.99:3478\nuse_aes_gcm=true\n",
-		"system_cfg": "nutserver.status=disabled\nnutserver.password=do-not-disclose\nbeep.status=enabled\npower_cycle_on_ac_recovery.status=enabled\n",
+		"cfgversion":         version,
+		"server_time_in_utc": "1800000000000",
+		"blocked_sta":        "",
+		"_type":              "setparam",
+		"mgmt_cfg":           "cfgversion=" + version + "\ncapability=notif\nled_enabled=true\nmgmt_url=https://192.0.2.99/manage\nreport_crash=false\nselfrun_guest_mode=pass\nstun_url=stun://192.0.2.99:3478\nuse_aes_gcm=true\n",
+		"system_cfg":         "nutserver.status=disabled\nnutserver.password=do-not-disclose\nbeep.status=enabled\npower_cycle_on_ac_recovery.status=enabled\n",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,9 +101,29 @@ func TestConfigReceiptObservedResponseAndRestart(t *testing.T) {
 			if !bytes.Equal(before, after) {
 				t.Fatal("adoption file changed")
 			}
-			for _, secret := range []string{"received-b", "do-not-disclose", testControllerKey, "192.0.2.99"} {
+			for _, secret := range []string{"received-b", "do-not-disclose", testControllerKey, "192.0.2.99", "1800000000000", "blocked_sta", "server_time_in_utc"} {
 				if strings.Contains(logs.String(), secret) {
 					t.Fatal("receipt log leaked input")
+				}
+			}
+			if mode == "persistent" {
+				receiptBytes, err := os.ReadFile(state.ReceiptPath(c.Runtime.StateFile))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, metadata := range []string{"1800000000000", "blocked_sta", "server_time_in_utc"} {
+					if bytes.Contains(receiptBytes, []byte(metadata)) {
+						t.Fatal("outer metadata persisted")
+					}
+				}
+			}
+			for _, endpoint := range []string{"/readyz", "/metrics"} {
+				rec := httptest.NewRecorder()
+				service.monitor.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, endpoint, nil))
+				for _, metadata := range []string{"1800000000000", "blocked_sta", "server_time_in_utc"} {
+					if strings.Contains(rec.Body.String(), metadata) {
+						t.Fatal("outer metadata exposed in diagnostics")
+					}
 				}
 			}
 			restarted := newReplayTestGateway(t, c, now, controller, nil)
@@ -157,12 +180,15 @@ func TestConfigReceiptFailedCommitKeepsMarkerAndBlocksFurtherWrites(t *testing.T
 
 func TestConfigReceiptRejectsEffectfulResponsesWithoutSideEffects(t *testing.T) {
 	for name, body := range map[string][]byte{
-		"unknown":     []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\nunknown=x\n"}`),
-		"key":         []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\nauthkey=ffeeddccbbaa99887766554433221100\n"}`),
-		"destination": []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\ninform_url=http://192.0.2.99:8080/inform\n"}`),
-		"downgrade":   []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\nuse_aes_gcm=false\n"}`),
-		"relay":       []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\n","cmd":"relayctl","outlet_table":[{"index":1}]}`),
-		"duplicate":   []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\ncfgversion=c\n"}`),
+		"outer marker mismatch":    []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b","cfgversion":"c"}`),
+		"blocked clients":          []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b","blocked_sta":"client"}`),
+		"invalid server timestamp": []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b","server_time_in_utc":"now"}`),
+		"unknown":                  []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\nunknown=x\n"}`),
+		"key":                      []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\nauthkey=ffeeddccbbaa99887766554433221100\n"}`),
+		"destination":              []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\ninform_url=http://192.0.2.99:8080/inform\n"}`),
+		"downgrade":                []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\nuse_aes_gcm=false\n"}`),
+		"relay":                    []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\n","cmd":"relayctl","outlet_table":[{"index":1}]}`),
+		"duplicate":                []byte(`{"_type":"setparam","mgmt_cfg":"cfgversion=b\ncfgversion=c\n"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := receiptConfiguration(t, "persistent")
