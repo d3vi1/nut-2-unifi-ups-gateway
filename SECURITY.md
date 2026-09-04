@@ -49,7 +49,7 @@ administer. Coordinate any live power-path test with the operator.
   in a separate bounded window and saved atomically with that transition.
 - Controller-supplied inform intervals never control the runtime scheduler;
   `N2U_INFORM_INTERVAL` remains the sole cadence source.
-- Adopted replies over plain HTTP cannot change persistent state or cadence
+- By default, adopted replies over plain HTTP cannot change persistent state or cadence
   after a controller key is installed, whether TNBU uses CBC or GCM. Bootstrap
   completion and a same-key one-way CBC-to-GCM upgrade remain compatible; full
   post-adoption response semantics require trusted HTTPS.
@@ -62,6 +62,13 @@ administer. Coordinate any live power-path test with the operator.
   key, URL, mode, adoption, cadence, restart, upgrade, relay, or power-control
   effect is applied. The state file remains unchanged. Persistent replay nonces
   remain unchanged.
+- The separate, default-off `N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE` accepts
+  the observed multi-field `setparam` through a strict pure classifier. `memory`
+  keeps the report marker in RAM; `persistent` saves an independent, private,
+  bounded receipt before reporting it. Both modes reject key, inform-origin,
+  mode, and command authority; inert management URLs are never followed.
+  Accompanying `system_cfg` remains unapplied. This exception does not change
+  the adoption state file or introduce any NUT or host-control path.
 - The health listener disables connection reuse and has per-request bounds plus
   a fixed aggregate connection cap. Its supplied deployment defaults to
   loopback.
@@ -181,6 +188,28 @@ returns to the persisted marker; any later controller `setparam` is evaluated
 again. A delayed authentic response can temporarily replace the volatile
 marker, which is why the option is off by default and must not be used across
 an untrusted network.
+
+The separate **CANDIDATE** configuration-receipt policy is documented in
+[Configuration](docs/configuration.md#multi-field-configuration-receipts).
+It admits only the observed inert companions to `cfgversion`, without deriving
+authority from the legacy adoption parser. In persistent mode, an independent
+`0600` file of at most 16 KiB binds the marker and up to 128 transition nonces to
+the current adoption context. The binding is not file-tamper protection against
+the local state-volume owner, who already controls adoption credentials.
+State v1 remains unchanged for rollback. Each instance needs its own state
+directory. Receipt writes are atomic and limited to one transition per 30 seconds
+per process; failed commits block further receipt writes until storage is repaired
+and the gateway restarts. Stable markers and noops do not write.
+
+Only marker-transition nonces persist. Same-marker replies and noops have only
+in-process replay tracking. Persisting that limited window does not provide
+request freshness. Authentic replies absent from the protected window, evicted
+nonces, and snapshot rollback can regress the report marker;
+persistence makes that effect survive restart. Network may stop provisioning
+although accompanying settings were ignored. Fixed receipt-status diagnostics
+and ignored-setting category counts expose this distinction without publishing
+controller values. Receipt acceptance must never authorize power, host, listener,
+credential, endpoint, cadence, reset, or upgrade effects.
 
 The software is provided under the warranty disclaimer in
 [GPL-2.0-only](LICENSE).

@@ -73,6 +73,19 @@ not establish a Network UI transition. Because GCM still does not correlate
 the response to the current request, this exception is suitable only for a
 trusted management LAN.
 
+### Multi-field receipt evidence
+
+The separate `N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE` experiment accepts a
+strictly validated multi-field `setparam`. A redacted Network 10.6.102 sample
+contained `cfgversion`, `capability`, `led_enabled`, `mgmt_url`, `report_crash`,
+`selfrun_guest_mode`, `stun_url`, and `use_aes_gcm=true`. The legacy sole-entry
+mirror rejects that shape. USWDA26 firmware assigns its marker before applying
+`system_cfg`, which can subsequently fail; receipt is not proof of applied
+settings. The new mode records only the marker and replay metadata, optionally
+in a separate private receipt file. No controller settings become executable.
+Online/rename/restart efficacy remains **CANDIDATE** pending live acceptance;
+authenticated GCM alone does not establish ordering or freshness.
+
 ## Genuine firmware protocol inventory
 
 | Direction | Endpoint | Purpose | Evidence | Gateway v1 |
@@ -85,8 +98,9 @@ trusted management LAN.
 | outbound | UDP/3478 | STUN client | **PROVEN** | omitted unless proven necessary |
 | outbound | configurable UDP | syslog client | **PROVEN** | omitted |
 | outbound | HTTPS | firmware download | **PROVEN** | omitted |
+| link layer | LLDP TX/RX | neighbor/uplink discovery code in USWDA26 1.6.1+413 | **PROVEN** static code; exact TLVs/runtime emission **UNKNOWN** | omitted; optional future investigation |
 
-The firmware contains no supported evidence for SSH, Telnet, LLDP, mDNS/DNS-SD,
+The firmware contains no supported evidence for SSH, Telnet, mDNS/DNS-SD,
 SNMP, SSDP/UPnP, MQTT, or WebSocket listeners. Namespace and parser strings
 alone were not promoted into protocol claims.
 
@@ -277,6 +291,7 @@ remain reference evidence rather than operational claims.
 | Reach and pass TNBU/JSON/MAC parsing on Network 10.6.101 | **PROVEN**; controller returns unknown-device HTTP 404 |
 | Adopt and pair through `/inform` | **OBSERVED** in a redacted Network 10.6.102 interoperability sample; the older 10.6.101 test remained a 404 |
 | Volatile plain-HTTP GCM `cfgversion` synchronization | **CANDIDATE**; explicit default-off compatibility option with automated coverage, pending live rename-recovery acceptance |
+| Multi-field configuration receipts, with optional persistence | **CANDIDATE**; automated parser/storage/restart coverage, pending exact-build Online/rename/restart acceptance |
 | Project NUT-observed outlet count, groups, USB type, and meter capability | **CANDIDATE**; automated coverage only, no topology-capable live source acceptance yet |
 | Advertise an independently verified NUT service at the emulated device IP | **CANDIDATE**, explicit opt-in only; default disabled |
 | Trigger UniFi OS shutdown policy from NUT battery state | **BLOCKED_EXTERNAL** until a controlled outage simulation |

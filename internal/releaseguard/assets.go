@@ -18,7 +18,7 @@ const (
 	maxReleaseAssetSize   = 128 << 20
 	maxExpandedBundleSize = 4 << 20
 	maxBundleMemberSize   = 1 << 20
-	composeSHA256         = "c3f1d8e80c22ae15345769e3029bf317a12fb1b793da08b8962ec27bdd7be883"
+	composeSHA256         = "355434062a389e9c6440b34e5bcd0c04c8a70ff2bf304b33afc6ea3778e0447a"
 	composeAuthSHA256     = "dff79bb144fc83589d3c4eb0d7a3b73ef25051db9db59ff71273cd606e6f7cfd"
 )
 
@@ -235,6 +235,10 @@ N2U_UNIFI_VERSION=1.6.1
 # It does not promise a Network UI transition.
 # Enable only for authenticated GCM under a non-default key on a trusted LAN.
 N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC=false
+# Multi-field configuration receipts: off, memory (first test), or persistent.
+# Requires the volatile option above to stay false. Trusted management LAN only.
+# CANDIDATE until live acceptance; received settings are not applied.
+N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE=off
 # Experimental: leave false unless a separate, credential-free NUT service was
 # verified from another LAN host at the emulated device IP, served ID, and port.
 N2U_UNIFI_NUT_SERVER_ENABLED=false

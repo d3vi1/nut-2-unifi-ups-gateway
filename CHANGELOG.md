@@ -3,9 +3,17 @@
 All notable changes are documented here. The project follows
 [Semantic Versioning](https://semver.org/) after its first tagged release.
 
-## 0.9.0 - 2026-09-04
+## 0.9.0 - Unreleased
 
 ### Added
+
+- A separate default-off multi-field configuration receipt policy, with memory
+  and persistent modes. It handles the observed management envelope without
+  granting command authority. A private, bounded receipt survives restart while
+  keeping adoption state v1 unchanged. Exact-build Online/rename/restart
+  acceptance remains **CANDIDATE**.
+- Identity-free receipt-status and ignored-setting diagnostics, atomic-storage
+  fault tests, and bounded transition-nonce replay protection across restart.
 
 - Experimental projection of NUT-observed outlet counts and relay groups,
   including deterministic remapping of opaque `outlet.N.groupid` values and

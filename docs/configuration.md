@@ -33,6 +33,7 @@ network without transport encryption; it is not suitable for an untrusted LAN.
 | `N2U_UNIFI_VERSION` | `1.6.1` | `1.6.1` or the exact selected build (`1.6.1.413`/`1.6.1.4933`) |
 | `N2U_INFORM_URL` | `http://unifi:8080/inform` | HTTP(S), `/inform`, no credentials/query/fragment |
 | `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC` | `false` | Boolean; explicit plain-HTTP compatibility opt-in |
+| `N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE` | `off` | `off`, `memory`, or `persistent`; incompatible with the volatile option |
 | `N2U_INFORM_INTERVAL` | `10s` | 1 second–10 minutes; sole runtime inform cadence |
 | `N2U_INFORM_TIMEOUT` | `10s` | 1 second–1 minute |
 | `N2U_DISCOVERY_INTERVAL` | `30s` | 5 seconds–10 minutes |
@@ -88,6 +89,75 @@ not establish any Network UI state transition. GCM does not provide
 request-response correlation, so a delayed but authentic response can
 temporarily replace the in-memory marker. Do not enable this option on an
 untrusted or shared network.
+
+### Multi-field configuration receipts
+
+`N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE` handles the observed controller
+response containing `cfgversion` plus ordinary management fields. It is a
+separate opt-in: leave `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC=false`.
+The sole-entry volatile experiment above cannot accept this response shape.
+Receipt interoperability remains **CANDIDATE** until exact-build live acceptance.
+
+| Mode | Behavior |
+|---|---|
+| `off` | Default; no receipt processing or receipt-file access |
+| `memory` | First interoperability test; report the accepted marker until restart |
+| `persistent` | Commit the accepted marker before reporting it; restore it after restart |
+
+For a controlled first test on a trusted management LAN:
+
+```dotenv
+N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC=false
+N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE=memory
+```
+
+Verify that Network leaves **Getting Ready** and pairings remain, then select
+`persistent` and verify both restart and rename behavior. Runtime health alone
+does not establish controller acceptance or successful device shutdown.
+
+The parser requires adoption, a non-default key, authenticated GCM, the current
+device MAC and HTTP controller origin, `_type=setparam`, and one valid
+`cfgversion`. It accepts only these inert companion keys: `capability`,
+`led_enabled`, `mgmt_url`, `report_crash`, `selfrun_guest_mode`, `stun_url`, and
+`use_aes_gcm=true`. Unknown or duplicate keys, malformed values, new auth keys,
+inform URL changes, mode downgrades, and effectful top-level fields reject the
+receipt. Neither companion URL becomes a network destination.
+
+An optional `system_cfg` is observed and ignored. A receipt does not claim that
+NUT-server, buzzer, relay, recovery-cycle, IP, or other settings were applied.
+Network may stop retrying a revision whose unsupported settings remain unapplied;
+check `ignored_controller_setting_categories` in `/readyz` and the corresponding
+`n2u_ignored_controller_setting_categories` metric before interpreting UI settings.
+
+Persistent mode uses a private `controller-receipt.json` beside `N2U_STATE_FILE`
+in the existing state volume (normally `/var/lib/n2u`). Use a separate state
+directory for each gateway instance. The adoption file keeps its v1 schema.
+The receipt is limited to 16 KiB: a schema/context binding, marker, and at most
+128 transition nonces. It contains no raw controller configuration or passwords.
+Changing device identity, adoption key/mode, persisted adoption marker, inform
+endpoint, carrier, or receipt policy invalidates the cached receipt.
+
+New receipts use a private temporary file, file sync, atomic rename, and directory
+sync before advancing the report. Stable markers and noops do not write. At most
+one transition is written per 30 seconds per process; deferred transitions can
+be accepted on a later response. A storage failure blocks further receipt writes
+for that process. Repair storage, then restart; no adoption reset is required.
+`configuration_receipt` in `/readyz` and `n2u_config_receipt_status` distinguish
+pending, received, stored, rejected, rate-limited, and storage-error states.
+NUT readiness remains independently measured.
+
+Only marker-transition nonces are persisted; ordinary noops and same-marker
+replies are remembered in process memory only. The persisted window rejects
+those transition replays across restart, but does not establish freshness or
+ordering. An unseen delayed reply, a same-marker reply no longer remembered,
+an evicted nonce, or restoration of an old volume can restore an old marker and
+mislead Network about convergence. Configuration versions are opaque; legitimate
+A-to-B-to-A changes remain possible. Enable only on a trusted management LAN.
+
+For rollback, use the previous version-matched image, Compose files, and `.env`
+with the same named state volume. The old binary reads its original adoption
+state and does not use the separate receipt. Do not retain new environment
+variables in an older deployment: unknown `N2U_` variables are rejected.
 
 ### Optional NUT Server advertisement
 

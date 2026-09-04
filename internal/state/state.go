@@ -196,19 +196,35 @@ func Save(path string, s State) error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create state directory: %w", err)
-	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode state: %w", err)
 	}
 	b = append(b, '\n')
+	return savePrivateBytes(path, b, nil)
+}
+
+// savePrivateBytes is shared by adoption state and the independent receipt.
+// checkpoint is an internal fault-injection seam; production callers pass nil.
+func savePrivateBytes(path string, b []byte, checkpoint func(string) error) error {
+	check := func(stage string) error {
+		if checkpoint != nil {
+			return checkpoint(stage)
+		}
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return errors.New("create private state directory")
+	}
+	if err := check("create"); err != nil {
+		return err
+	}
 	f, err := os.CreateTemp(dir, ".state-*")
 	if err != nil {
 		return fmt.Errorf("create temporary state: %w", err)
 	}
+	defer f.Close()
 	tmp := f.Name()
 	keep := false
 	defer func() {
@@ -220,14 +236,26 @@ func Save(path string, s State) error {
 	if err := f.Chmod(0o600); err != nil {
 		return fmt.Errorf("protect temporary state: %w", err)
 	}
+	if err := check("write"); err != nil {
+		return err
+	}
 	if _, err := f.Write(b); err != nil {
 		return fmt.Errorf("write temporary state: %w", err)
+	}
+	if err := check("file-sync"); err != nil {
+		return err
 	}
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync temporary state: %w", err)
 	}
+	if err := check("close"); err != nil {
+		return err
+	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close temporary state: %w", err)
+	}
+	if err := check("rename"); err != nil {
+		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("replace state: %w", err)
@@ -241,6 +269,9 @@ func Save(path string, s State) error {
 		return fmt.Errorf("open state directory: %w", err)
 	}
 	defer d.Close()
+	if err := check("directory-sync"); err != nil {
+		return err
+	}
 	if err := d.Sync(); err != nil {
 		return fmt.Errorf("sync state directory: %w", err)
 	}

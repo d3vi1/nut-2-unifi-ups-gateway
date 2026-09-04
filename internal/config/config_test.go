@@ -28,8 +28,35 @@ func TestLoadDefaults(t *testing.T) {
 	if c.UniFi.VolatileHTTPCfgVersionSync {
 		t.Fatal("volatile HTTP/GCM cfgversion compatibility must default off")
 	}
+	if c.UniFi.ConfigReceiptMode != "off" || c.UniFi.ConfigReceiptsEnabled() {
+		t.Fatal("configuration receipts must default off")
+	}
 	if c.Runtime.HealthAddress != "127.0.0.1:9199" {
 		t.Fatalf("unexpected health default %q", c.Runtime.HealthAddress)
+	}
+}
+
+func TestConfigReceiptModesAreExplicitAndMutuallyExclusive(t *testing.T) {
+	for _, mode := range []string{"off", "memory", "persistent", "", "on", "true", "Persistent"} {
+		t.Run(mode, func(t *testing.T) {
+			clearEnvironment(t)
+			t.Setenv("N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE", mode)
+			_, err := Load()
+			if (mode == "off" || mode == "memory" || mode == "persistent" || mode == "") != (err == nil) {
+				t.Fatal("unexpected receipt mode validation")
+			}
+		})
+	}
+	clearEnvironment(t)
+	t.Setenv("N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE", "persistent")
+	t.Setenv("N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("ambiguous receipt modes accepted")
+	}
+	t.Setenv("N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC", "false")
+	t.Setenv("N2U_STATE_FILE", "/var/lib/n2u/controller-receipt.json")
+	if _, err := Load(); err == nil {
+		t.Fatal("receipt/adoption filename collision accepted")
 	}
 }
 

@@ -32,36 +32,43 @@ type Poller interface {
 
 // Options supplies test seams. Zero values select production implementations.
 type Options struct {
-	Poller     Poller
-	Controller Controller
-	Resolver   Resolver
-	Monitor    *health.Monitor
-	Logger     *slog.Logger
-	Network    NetworkIdentity
-	Now        func() time.Time
-	SaveState  func(string, state.State) error
+	Poller      Poller
+	Controller  Controller
+	Resolver    Resolver
+	Monitor     *health.Monitor
+	Logger      *slog.Logger
+	Network     NetworkIdentity
+	Now         func() time.Time
+	SaveState   func(string, state.State) error
+	SaveReceipt func(string, state.Receipt) error
 }
 
 // Gateway is safe for concurrent health, poll, and inform activity.
 type Gateway struct {
-	configuration config.Config
-	poller        Poller
-	controller    Controller
-	encoder       *inform.Encoder
-	monitor       *health.Monitor
-	logger        *slog.Logger
-	network       NetworkIdentity
-	now           func() time.Time
-	saveState     func(string, state.State) error
-	started       time.Time
-	mac           [6]byte
-	informMu      sync.Mutex
-	gcmReplay     gcmReplayWindow
+	configuration    config.Config
+	poller           Poller
+	controller       Controller
+	encoder          *inform.Encoder
+	monitor          *health.Monitor
+	logger           *slog.Logger
+	network          NetworkIdentity
+	now              func() time.Time
+	saveState        func(string, state.State) error
+	started          time.Time
+	mac              [6]byte
+	informMu         sync.Mutex
+	gcmReplay        gcmReplayWindow
+	saveReceipt      func(string, state.Receipt) error
+	receipt          state.Receipt
+	receiptEpoch     string
+	receiptBlocked   bool
+	receiptLastWrite time.Time
 
 	mu         sync.RWMutex
 	persistent state.State
 	// reportedCfgVersion is a report-only compatibility marker. It starts from
 	// persistent adoption state but is never copied back into state.State.
+	// Explicit configuration receipts have their own independent cache.
 	reportedCfgVersion string
 	latest             nut.Snapshot
 	haveLatest         bool
@@ -239,6 +246,9 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 	if options.SaveState == nil {
 		options.SaveState = state.Save
 	}
+	if options.SaveReceipt == nil {
+		options.SaveReceipt = state.SaveReceipt
+	}
 	if options.Resolver == nil {
 		options.Resolver = net.DefaultResolver
 	}
@@ -315,6 +325,7 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		network:            network,
 		now:                options.Now,
 		saveState:          options.SaveState,
+		saveReceipt:        options.SaveReceipt,
 		started:            options.Now().UTC(),
 		mac:                mac,
 		persistent:         persistent,
@@ -323,6 +334,7 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		nextDiscovery:      1,
 	}
 	gateway.monitor.SetAdopted(persistent.Adoption.Adopted)
+	gateway.initializeReceipt()
 	return gateway, nil
 }
 
@@ -421,17 +433,36 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 		if !ok {
 			return inform.Outcome{}, errors.New("gateway authenticated controller response omitted its nonce")
 		}
-		if nextReplay.contains(nonce) {
+		if nextReplay.contains(nonce) || g.receipt.Contains(nonce) {
 			return inform.Outcome{}, ErrControllerResponseReplay
 		}
 		acceptedNonce = nonce
 		hasAcceptedNonce = true
 	}
 	currentAdoption := adoptionFromState(persistent)
+	receiptEligible := g.receiptsEligible(persistent, mode)
+	if receiptEligible {
+		candidate, err := inform.ClassifyConfigReceipt(decoded.Payload)
+		if err == nil {
+			if err := g.acceptConfigReceipt(candidate, acceptedNonce, now); err != nil {
+				return inform.Outcome{}, err
+			}
+			g.gcmReplay = nextReplay.withAccepted(acceptedNonce, false)
+			g.mu.Lock()
+			g.lastInform = now
+			g.mu.Unlock()
+			informResult = health.InformSuccess
+			return inform.Outcome{Kind: inform.ResponseSetParam, UnsupportedSettings: candidate.UnsupportedSettings}, nil
+		}
+	}
 	nextAdoption := currentAdoption
 	outcome, err := nextAdoption.ApplyControllerResponse(decoded.Payload)
 	if err != nil {
 		return inform.Outcome{}, err
+	}
+	if receiptEligible && outcome.Kind == inform.ResponseSetParam {
+		g.monitor.RecordConfigReceipt(health.ReceiptRejected)
+		return inform.Outcome{}, errors.New("controller configuration receipt rejected")
 	}
 	volatileCfgVersion, hasVolatileCfgVersion := confineAdoptedPlainHTTPResponse(
 		currentAdoption,
@@ -502,6 +533,9 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	g.lastInform = now
 	g.mu.Unlock()
 	g.gcmReplay = nextReplay
+	if adoptionChanged {
+		g.resetReceiptContext(nextPersistent)
+	}
 	informResult = health.InformSuccess
 	g.monitor.SetAdopted(nextPersistent.Adoption.Adopted)
 	return outcome, nil

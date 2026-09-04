@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -47,6 +48,7 @@ type UniFi struct {
 	InformTimeout              time.Duration
 	DiscoveryInterval          time.Duration
 	VolatileHTTPCfgVersionSync bool
+	ConfigReceiptMode          string
 	NUTServer                  NUTServerAdvertisement
 }
 
@@ -88,9 +90,10 @@ func Load() (Config, error) {
 			Password: password,
 		},
 		UniFi: UniFi{
-			Model:     value("N2U_UNIFI_MODEL", "USWDA26"),
-			Version:   value("N2U_UNIFI_VERSION", "1.6.1"),
-			InformURL: value("N2U_INFORM_URL", "http://unifi:8080/inform"),
+			ConfigReceiptMode: value("N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE", "off"),
+			Model:             value("N2U_UNIFI_MODEL", "USWDA26"),
+			Version:           value("N2U_UNIFI_VERSION", "1.6.1"),
+			InformURL:         value("N2U_INFORM_URL", "http://unifi:8080/inform"),
 			NUTServer: NUTServerAdvertisement{
 				ID: value("N2U_UNIFI_NUT_SERVER_ID", "ups"),
 			},
@@ -148,6 +151,14 @@ func Load() (Config, error) {
 }
 
 func (c Config) Validate() error {
+	switch c.UniFi.ConfigReceiptMode {
+	case "", "off", "memory", "persistent":
+	default:
+		return errors.New("N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE must be off, memory, or persistent")
+	}
+	if c.UniFi.VolatileHTTPCfgVersionSync && c.UniFi.ConfigReceiptsEnabled() {
+		return errors.New("configuration receipts and volatile cfgversion synchronization are mutually exclusive")
+	}
 	if c.NUT.Timeout < time.Second || c.NUT.Timeout > time.Minute {
 		return errors.New("N2U_NUT_TIMEOUT must be between 1 second and 1 minute")
 	}
@@ -216,6 +227,9 @@ func (c Config) Validate() error {
 	}
 	if c.Runtime.StateFile == "" || c.Runtime.HealthAddress == "" {
 		return errors.New("state file and health address cannot be empty")
+	}
+	if c.UniFi.ConfigReceiptsEnabled() && filepath.Base(c.Runtime.StateFile) == "controller-receipt.json" {
+		return errors.New("N2U_STATE_FILE cannot use the reserved controller-receipt.json name")
 	}
 	if _, _, err := net.SplitHostPort(c.Runtime.HealthAddress); err != nil {
 		return fmt.Errorf("N2U_HEALTH_ADDRESS: %w", err)
@@ -322,7 +336,8 @@ func loopbackHost(host string) bool {
 }
 
 var knownEnvironment = map[string]struct{}{
-	"N2U_NUT_ADDRESS": {}, "N2U_NUT_UPS": {}, "N2U_NUT_USERNAME": {},
+	"N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE": {},
+	"N2U_NUT_ADDRESS":                        {}, "N2U_NUT_UPS": {}, "N2U_NUT_USERNAME": {},
 	"N2U_NUT_PASSWORD": {}, "N2U_NUT_PASSWORD_FILE": {}, "N2U_NUT_TIMEOUT": {},
 	"N2U_NUT_ALLOW_INSECURE_REMOTE": {},
 	"N2U_UNIFI_MODEL":               {}, "N2U_UNIFI_VERSION": {}, "N2U_INFORM_URL": {},
@@ -332,6 +347,11 @@ var knownEnvironment = map[string]struct{}{
 	"N2U_DEVICE_MAC": {}, "N2U_DEVICE_SERIAL": {}, "N2U_DEVICE_HOSTNAME": {}, "N2U_DEVICE_IP": {},
 	"N2U_STATE_FILE": {}, "N2U_HEALTH_ADDRESS": {}, "N2U_POLL_INTERVAL": {}, "N2U_STALE_AFTER": {},
 	"N2U_LOG_LEVEL": {},
+}
+
+// ConfigReceiptsEnabled keeps a zero-value programmatic configuration off.
+func (u UniFi) ConfigReceiptsEnabled() bool {
+	return u.ConfigReceiptMode == "memory" || u.ConfigReceiptMode == "persistent"
 }
 
 func rejectUnknownEnvironment() error {

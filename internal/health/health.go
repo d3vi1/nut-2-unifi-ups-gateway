@@ -19,20 +19,67 @@ const (
 )
 
 type Monitor struct {
-	mu         sync.RWMutex
-	started    time.Time
-	staleAfter time.Duration
-	upstreamAt time.Time
-	upstreamOK bool
-	informAt   time.Time
-	informOK   bool
-	adopted    bool
+	mu                        sync.RWMutex
+	started                   time.Time
+	staleAfter                time.Duration
+	upstreamAt                time.Time
+	upstreamOK                bool
+	informAt                  time.Time
+	informOK                  bool
+	adopted                   bool
+	receiptStatus             ReceiptStatus
+	ignoredControllerSettings int
 
 	pollsTotal         atomic.Uint64
 	pollErrorsTotal    atomic.Uint64
 	informsTotal       atomic.Uint64
 	informErrorsTotal  atomic.Uint64
 	informPendingTotal atomic.Uint64
+}
+
+type ReceiptStatus uint8
+
+const (
+	ReceiptDisabled ReceiptStatus = iota
+	ReceiptPending
+	ReceiptReceived
+	ReceiptStored
+	ReceiptRejected
+	ReceiptStorageError
+	ReceiptRateLimited
+)
+
+func (s ReceiptStatus) String() string {
+	switch s {
+	case ReceiptPending:
+		return "pending"
+	case ReceiptReceived:
+		return "received"
+	case ReceiptStored:
+		return "stored"
+	case ReceiptRejected:
+		return "rejected"
+	case ReceiptStorageError:
+		return "storage_error"
+	case ReceiptRateLimited:
+		return "rate_limited"
+	default:
+		return "disabled"
+	}
+}
+
+func (m *Monitor) RecordConfigReceipt(status ReceiptStatus) {
+	m.mu.Lock()
+	m.receiptStatus = status
+	m.mu.Unlock()
+}
+func (m *Monitor) SetIgnoredControllerSettings(count int) {
+	if count < 0 || count > 5 {
+		return
+	}
+	m.mu.Lock()
+	m.ignoredControllerSettings = count
+	m.mu.Unlock()
 }
 
 // InformResult classifies the result of one actual controller exchange.
@@ -89,22 +136,26 @@ func (m *Monitor) SetAdopted(v bool) {
 }
 
 type snapshot struct {
-	Status              string `json:"status"`
-	UpstreamFresh       bool   `json:"upstream_fresh"`
-	ControllerReachable bool   `json:"controller_reachable"`
-	Adopted             bool   `json:"adopted"`
-	UptimeSeconds       int64  `json:"uptime_seconds"`
+	ConfigReceipt             string `json:"configuration_receipt"`
+	IgnoredControllerSettings int    `json:"ignored_controller_setting_categories"`
+	Status                    string `json:"status"`
+	UpstreamFresh             bool   `json:"upstream_fresh"`
+	ControllerReachable       bool   `json:"controller_reachable"`
+	Adopted                   bool   `json:"adopted"`
+	UptimeSeconds             int64  `json:"uptime_seconds"`
 }
 
 func (m *Monitor) Snapshot(now time.Time) (snapshot, bool) {
 	m.mu.RLock()
 	fresh := m.upstreamOK && !m.upstreamAt.IsZero() && now.Sub(m.upstreamAt) <= m.staleAfter
 	s := snapshot{
-		Status:              "not_ready",
-		UpstreamFresh:       fresh,
-		ControllerReachable: m.informOK,
-		Adopted:             m.adopted,
-		UptimeSeconds:       int64(now.Sub(m.started).Seconds()),
+		ConfigReceipt:             m.receiptStatus.String(),
+		IgnoredControllerSettings: m.ignoredControllerSettings,
+		Status:                    "not_ready",
+		UpstreamFresh:             fresh,
+		ControllerReachable:       m.informOK,
+		Adopted:                   m.adopted,
+		UptimeSeconds:             int64(now.Sub(m.started).Seconds()),
 	}
 	m.mu.RUnlock()
 	if fresh {
@@ -147,6 +198,13 @@ func (m *Monitor) Handler() http.Handler {
 		fmt.Fprintf(w, "# HELP n2u_inform_pending_total HTTP 404 inform responses; adoption may be pending or the profile may be unrecognized.\n")
 		fmt.Fprintf(w, "# TYPE n2u_inform_pending_total counter\n")
 		fmt.Fprintf(w, "n2u_inform_pending_total %d\n", m.informPendingTotal.Load())
+		fmt.Fprintln(w, "# HELP n2u_ignored_controller_setting_categories Unsupported setting categories in the last eligible configuration receipt; no settings are applied.")
+		fmt.Fprintln(w, "# TYPE n2u_ignored_controller_setting_categories gauge")
+		fmt.Fprintf(w, "n2u_ignored_controller_setting_categories %d\n", s.IgnoredControllerSettings)
+		fmt.Fprintln(w, "# TYPE n2u_config_receipt_status gauge")
+		for _, status := range []ReceiptStatus{ReceiptDisabled, ReceiptPending, ReceiptReceived, ReceiptStored, ReceiptRejected, ReceiptStorageError, ReceiptRateLimited} {
+			fmt.Fprintf(w, "n2u_config_receipt_status{status=%q} %s\n", status.String(), boolNumber(status.String() == s.ConfigReceipt))
+		}
 	})
 	return mux
 }
