@@ -118,6 +118,16 @@ fourth content-addressed toolchain input enforced in the same test. Every
 export a remote build cache; CI-only non-publishing builds may use their
 separate cache.
 
+The pinned attestation action reads the default Docker credential path rather
+than `DOCKER_CONFIG`. A CI-only bridge validates and temporarily places only the
+job's GHCR credential there, preserving the original credential-free config.
+The bridge is checked before the image build. After attestation, on success or
+failure, it restores the exact previous file (or removes only its newly created
+file), scrubs the isolated publication credential, and verifies the pinned
+Buildx plugin remains available. Cleanup failure blocks further verification or
+publication. A killed/canceled hosted runner relies on ephemeral runner teardown.
+No token grants, runtime dependencies or gateway behavior change.
+
 The release attestation verifier is a separate pinned toolchain: its GitHub CLI
 version/archive checksum and the Sigstore Public Good trusted-root source,
 raw checksum, and compact-JSONL checksum must change together with their

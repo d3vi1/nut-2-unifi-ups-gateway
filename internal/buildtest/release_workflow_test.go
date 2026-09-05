@@ -148,14 +148,20 @@ func TestReleaseImageHasNoVersionAliasAndUsesPermanentUniqueAnchor(t *testing.T)
 	}
 	credentialRemovalStep := image[logout:installVerifier]
 	for _, want := range []string{
-		"docker logout ghcr.io",
-		`[[ ! -f "$docker_config_file" ]]`,
-		`(has("ghcr.io") | not)`,
-		`[[ ! -x "$DOCKER_CONFIG/cli-plugins/docker-buildx" ]]`,
+		"if: success() || failure()",
+		"run: node .github/scripts/attestation-auth.mjs cleanup",
 	} {
 		if !strings.Contains(credentialRemovalStep, want) {
 			t.Errorf("GHCR credential removal is missing %q", want)
 		}
+	}
+	prepare := strings.Index(image, "run: node .github/scripts/attestation-auth.mjs prepare")
+	push := strings.Index(image, "Build and push release image with SBOM and provenance")
+	if prepare < 0 || push <= prepare || attest <= push {
+		t.Fatal("attestation credential lookup must be checked before publishing an image")
+	}
+	if strings.Count(image, "attestation-auth.mjs prepare") != 1 || strings.Count(image, "attestation-auth.mjs cleanup") != 1 {
+		t.Fatal("attestation credential bridge must be prepared and cleaned exactly once")
 	}
 	for _, forbidden := range []string{
 		`rm -rf "$DOCKER_CONFIG"`,
