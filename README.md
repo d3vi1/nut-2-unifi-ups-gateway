@@ -7,9 +7,13 @@
 > Ubiquiti. Keep your existing NUT shutdown plan. Pairing is not proof of a
 > successful shutdown; never use this gateway as your only protection.
 >
-> **A request to Ubiquiti:** please add a neutral `NUTUPS` model to the UniFi UPS
-> flow, or native NUT support for UniFi NVRs and gateways. That would remove the
-> need to present another UPS model for compatibility.
+> **A request to Ubiquiti:** please add a neutral virtual ("fake") UPS model,
+> such as `NUTUPS`, to the UniFi Network UPS flow. Let its socket topology and
+> features come from the `outlet_table` and capabilities reported in `INFORM`,
+> without imposing sockets, relay groups, battery-backed zones or controls from
+> a fixed hardware template. Missing capabilities should stay unavailable, not
+> be assumed. Alternatively, please add native NUT support for UniFi NVRs and
+> gateways. Either would remove the need to impersonate a physical UniFi UPS.
 
 Already using [Network UPS Tools (NUT)](https://networkupstools.org/)?
 This small Docker gateway reads your UPS status and makes it visible in UniFi

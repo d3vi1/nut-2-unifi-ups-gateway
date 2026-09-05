@@ -211,5 +211,22 @@ and ignored-setting category counts expose this distinction without publishing
 controller values. Receipt acceptance must never authorize power, host, listener,
 credential, endpoint, cadence, reset, or upgrade effects.
 
+### Controller-selected reported firmware
+
+The default-off `N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC` option requires
+persistent configuration receipts and an adopted HTTP/GCM session with a
+non-default key. It may persist and report only a strictly validated version,
+including a lower controller-selected target. URLs, checksums and timestamps
+are bounded inert metadata: never fetched, executed, retained or logged.
+
+The separate private `controller-firmware.json` is bound to identity, key,
+origin, GCM and the source profile. Atomic commit precedes publication; bounded
+transition nonces and write-rate limits do not establish freshness or ordering.
+Old authentic responses or restored volumes can regress the reported target.
+This can influence Network's upgrade and configuration decisions, but never
+changes the source profile or authorizes firmware installation, reboot, NUT
+writes, endpoint changes or host control. Storage failure blocks further target
+updates until repair and restart. See the configuration reference for limits.
+
 The software is provided under the warranty disclaimer in
 [GPL-2.0-only](LICENSE).
