@@ -99,3 +99,18 @@ func TestImageSourceNeedsNoDraftButBindingStillFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestBindingExplicitlyPreservesDraftIdentity(t *testing.T) {
+	environment, release, guard, fake, closeServer := setupReservedRelease(t)
+	defer closeServer()
+	if err := guard.Bind(t.Context(), release, mapLookup(environment)); err != nil {
+		t.Fatal(err)
+	}
+	if fake.release.tag != release.Tag || !fake.release.draft || fake.release.immutable ||
+		fake.publishMakeLatest != "unset" || len(fake.release.assets) != 0 || fake.releasePatchCount != 1 {
+		t.Fatal("binding changed source identity, published the draft, or changed latest")
+	}
+	if err := guard.VerifyBound(t.Context(), release, mapLookup(environment)); err != nil {
+		t.Fatal(err)
+	}
+}

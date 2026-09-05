@@ -350,6 +350,8 @@ func (fake *fakeGitHub) handleNumericRelease(writer http.ResponseWriter, request
 				writeJSON(writer, http.StatusUnprocessableEntity, map[string]string{"message": "invalid body"})
 				return
 			}
+			// Observed GitHub draft PATCH behavior when tag_name is omitted.
+			fake.release.tag = "untagged-synthetic"
 		} else {
 			var tagName, target, name, body, makeLatest string
 			var draft, prerelease bool
@@ -360,11 +362,15 @@ func (fake *fakeGitHub) handleNumericRelease(writer http.ResponseWriter, request
 				json.Unmarshal(input["body"], &body) != nil ||
 				json.Unmarshal(input["draft"], &draft) != nil ||
 				json.Unmarshal(input["prerelease"], &prerelease) != nil ||
-				json.Unmarshal(input["make_latest"], &makeLatest) != nil || draft ||
+				json.Unmarshal(input["make_latest"], &makeLatest) != nil ||
 				tagName != fake.releaseContext.Tag || target != fake.releaseContext.SourceSHA ||
 				name != releaseTitle(fake.releaseContext) || body != boundBody(fake.releaseContext, mustTestBinding(fake.t, fake.releaseContext)) ||
 				prerelease != fake.releaseContext.Prerelease {
 				writeJSON(writer, http.StatusUnprocessableEntity, map[string]string{"message": "invalid publish"})
+				return
+			}
+			if draft && (!fake.release.draft || fake.release.immutable || len(fake.release.assets) != 0 || makeLatest != "false") {
+				writeJSON(writer, http.StatusUnprocessableEntity, map[string]string{"message": "invalid binding"})
 				return
 			}
 			fake.release.tag = tagName
@@ -372,9 +378,11 @@ func (fake *fakeGitHub) handleNumericRelease(writer http.ResponseWriter, request
 			fake.release.name = name
 			fake.release.body = body
 			fake.release.prerelease = prerelease
-			fake.publishMakeLatest = makeLatest
-			fake.release.draft = false
-			fake.release.immutable = !fake.leavePublishedMutable
+			fake.release.draft = draft
+			if !draft {
+				fake.publishMakeLatest = makeLatest
+				fake.release.immutable = !fake.leavePublishedMutable
+			}
 		}
 		writeJSON(writer, http.StatusOK, fake.releaseResponse())
 	default:
