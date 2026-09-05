@@ -31,6 +31,17 @@ func TestHealthcheckUsesConfiguredListener(t *testing.T) {
 }
 
 func TestStartupErrorsUseSafeReasons(t *testing.T) {
+	// Publishing jobs carry N2U_RELEASE_* variables which the runtime rightly
+	// rejects. Isolate this runtime fixture without relaxing that validation.
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "N2U_") {
+			t.Setenv(name, "") // Register restoration of the original value.
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal("isolate runtime fixture environment")
+			}
+		}
+	}
 	t.Run("configuration", func(t *testing.T) {
 		t.Setenv("N2U_UNKNOWN_secret", "private")
 		var stdout, stderr bytes.Buffer
