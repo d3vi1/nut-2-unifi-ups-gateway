@@ -120,7 +120,8 @@ separate cache.
 
 The pinned attestation action reads the default Docker credential path rather
 than `DOCKER_CONFIG`. A CI-only bridge validates and temporarily places only the
-job's GHCR credential there, preserving the original credential-free config.
+job's GHCR credential there, preserving the original config and any unrelated
+registry credentials. Existing GHCR authority or credential helpers are rejected.
 The bridge is checked before the image build. After attestation, on success or
 failure, it restores the exact previous file (or removes only its newly created
 file), scrubs the isolated publication credential, and verifies the pinned

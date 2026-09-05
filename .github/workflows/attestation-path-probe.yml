@@ -58,6 +58,8 @@ jobs:
           };
           console.log(JSON.stringify({homeCanonical: fs.realpathSync(os.homedir()) === path.resolve(os.homedir()), isolated: inspect(process.env.DOCKER_CONFIG), target: inspect(path.join(os.homedir(), '.docker'))}));
           JAVASCRIPT
-      - name: Remove the temporary read-only registry credential
+      - name: Exercise the exact credential bridge on the hosted runner
+        run: node .github/scripts/attestation-auth.mjs prepare
+      - name: Restore and scrub both credential stores
         if: success() || failure()
-        run: docker logout ghcr.io
+        run: node .github/scripts/attestation-auth.mjs cleanup

@@ -41,6 +41,16 @@ function config(file) {
   return result;
 }
 
+function assertNoGHCR(value) {
+  assert.ok(value.auths === undefined || object(value.auths));
+  for (const key of Object.keys(value.auths ?? {})) {
+    // Docker accepts bare registry names and URL-style keys. Never take over
+    // existing GHCR authority, including scheme, case, port or path aliases.
+    const registry = new URL(key.includes('://') ? key : 'https://' + key);
+    assert.notEqual(registry.hostname.toLowerCase(), 'ghcr.io');
+  }
+}
+
 function replace(file, bytes, mode) {
   const temporary = path.join(path.dirname(file), '.n2u-attestation-auth-new');
   const descriptor = fs.openSync(temporary, 'wx', 0o600);
@@ -80,7 +90,7 @@ export function prepare({attestDir, isolatedDir, stateDir}) {
   let previous = null;
   try { previous = config(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   // Preserve unrelated runner state, but fail before taking over existing auth.
-  assert.equal(Object.keys(previous?.value.auths ?? {}).length, 0);
+  assertNoGHCR(previous?.value ?? {});
   const bridge = Buffer.from(JSON.stringify({auths: {'ghcr.io': credential}}) + '\n');
   // Exclusive journal creation precedes the only change to the default config.
   fs.mkdirSync(stateDir, {mode: 0o700});
@@ -112,7 +122,8 @@ export function cleanup({attestDir, isolatedDir, stateDir}) {
         if (saved.existed) {
           const original = Buffer.from(saved.bytes, 'base64');
           const parsed = JSON.parse(original.toString('utf8'));
-          assert.ok(object(parsed) && Object.keys(parsed.auths ?? {}).length === 0);
+          assert.ok(object(parsed));
+          assertNoGHCR(parsed);
           assert.ok(parsed.credsStore === undefined && parsed.credHelpers === undefined && parsed.HttpHeaders === undefined);
           replace(target, original, saved.mode);
           const restored = config(target);

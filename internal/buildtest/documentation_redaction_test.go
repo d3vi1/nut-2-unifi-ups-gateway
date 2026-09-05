@@ -180,7 +180,7 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 		"docs/installation.md":        "5c649964d14b55ef533cb1277f189c23d903d5860f723dea74c1a83b8d9ee111",
 		"docs/compatibility.md":       "17eaa40a14845163a475c075e9f0f04dbae7d039d8d8b7684c9e2594722ae45c",
 		"docs/troubleshooting.md":     "f60ff17228a0b6b411fa7bb2bd95af6226280f5c3d7f44b342e44f0631bd980e",
-		"docs/releasing.md":           "9ab983cf45a65e13e342818917a41188e2e440388e9d4d085db8c3565711331a",
+		"docs/releasing.md":           "e8efa98470bf853a4ae28dbe54bc926f5dcaf2bc790b1a4b70a68c35657b29d0",
 	}
 	for path, want := range expected {
 		document := readRepositoryFile(t, strings.Split(path, "/")...)
