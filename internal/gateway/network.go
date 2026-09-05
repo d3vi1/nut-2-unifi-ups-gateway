@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"syscall"
+
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 )
 
 // NetworkIdentity contains the non-secret IPv4 values projected to discovery
@@ -30,7 +32,7 @@ func ResolveNetworkIdentity(ctx context.Context, configuredIP, informURL string,
 	}
 	controllerIP, err := resolveIPv4(ctx, resolver, u.Hostname())
 	if err != nil {
-		return NetworkIdentity{}, errors.New("controller has no usable IPv4 address")
+		return NetworkIdentity{}, diagnostic.Wrap(diagnostic.ControllerDNS, errors.New("controller has no usable IPv4 address"))
 	}
 	deviceIP := net.ParseIP(configuredIP).To4()
 	if configuredIP == "" {
@@ -40,7 +42,7 @@ func ResolveNetworkIdentity(ctx context.Context, configuredIP, informURL string,
 		}
 		deviceIP, err = routeLocalIPv4(controllerIP, port)
 		if err != nil {
-			return NetworkIdentity{}, err
+			return NetworkIdentity{}, diagnostic.Wrap(diagnostic.ControllerRoute, err)
 		}
 	}
 	if deviceIP == nil || deviceIP.IsUnspecified() || deviceIP.IsMulticast() {

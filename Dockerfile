@@ -28,7 +28,7 @@ ARG REVISION=unknown
 ARG BUILD_DATE=unknown
 
 LABEL org.opencontainers.image.title="NUT 2 UniFi UPS Gateway" \
-      org.opencontainers.image.description="Read-only-by-default NUT to UniFi UPS compatibility gateway" \
+      org.opencontainers.image.description="Read-only Network UPS Tools to UniFi Network UPS gateway" \
       org.opencontainers.image.source="https://github.com/d3vi1/nut-2-unifi-ups-gateway" \
       org.opencontainers.image.licenses="GPL-2.0-only" \
       org.opencontainers.image.version="$VERSION" \

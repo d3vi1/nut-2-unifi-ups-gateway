@@ -1,3 +1,4 @@
+# Optional credential file overlay for the shared Compose deployment.
 services:
   gateway:
     environment:

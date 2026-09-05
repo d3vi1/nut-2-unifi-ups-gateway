@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 )
 
 const currentVersion = 1
@@ -50,7 +52,8 @@ type Adoption struct {
 // LoadOrCreate loads path or initializes it with a random locally-administered
 // unicast identity. Explicit identity values are honored only at creation; a
 // mismatch against existing state fails rather than silently changing identity.
-func LoadOrCreate(path, requestedMAC, requestedSerial, informURL, defaultKey string) (State, error) {
+func LoadOrCreate(path, requestedMAC, requestedSerial, informURL, defaultKey string) (result State, resultErr error) {
+	defer func() { resultErr = diagnostic.Fallback(diagnostic.StateInvalid, resultErr) }()
 	info, err := os.Lstat(path)
 	if err == nil {
 		if !info.Mode().IsRegular() {
@@ -58,7 +61,11 @@ func LoadOrCreate(path, requestedMAC, requestedSerial, informURL, defaultKey str
 		}
 		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 		if err != nil {
-			return State{}, errors.New("open state safely")
+			code := diagnostic.StateRead
+			if errors.Is(err, os.ErrPermission) {
+				code = diagnostic.StatePermissions
+			}
+			return State{}, diagnostic.Wrap(code, errors.New("open state safely"))
 		}
 		defer f.Close()
 		openedInfo, err := f.Stat()
@@ -66,7 +73,7 @@ func LoadOrCreate(path, requestedMAC, requestedSerial, informURL, defaultKey str
 			return State{}, errors.New("state file changed while opening")
 		}
 		if openedInfo.Mode().Perm()&0o077 != 0 {
-			return State{}, errors.New("state file must not be accessible by group or others")
+			return State{}, diagnostic.Wrap(diagnostic.StatePermissions, errors.New("state file must not be accessible by group or others"))
 		}
 		if openedInfo.Size() < 1 || openedInfo.Size() > maxStateBytes {
 			return State{}, errors.New("state file has invalid size")
@@ -84,10 +91,10 @@ func LoadOrCreate(path, requestedMAC, requestedSerial, informURL, defaultKey str
 			return State{}, fmt.Errorf("validate state: %w", err)
 		}
 		if requestedMAC != "" && !strings.EqualFold(normalizeMAC(requestedMAC), s.Identity.MAC) {
-			return State{}, errors.New("configured device MAC does not match persistent state")
+			return State{}, diagnostic.Wrap(diagnostic.IdentityMismatch, errors.New("configured device MAC does not match persistent state"))
 		}
 		if requestedSerial != "" && requestedSerial != s.Identity.Serial {
-			return State{}, errors.New("configured device serial does not match persistent state")
+			return State{}, diagnostic.Wrap(diagnostic.IdentityMismatch, errors.New("configured device serial does not match persistent state"))
 		}
 		// A failed first startup may have persisted the firmware-default
 		// hostname before it could be resolved. While still pending on the
@@ -105,7 +112,11 @@ func LoadOrCreate(path, requestedMAC, requestedSerial, informURL, defaultKey str
 		return s, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return State{}, errors.New("open state safely")
+		code := diagnostic.StateRead
+		if errors.Is(err, os.ErrPermission) {
+			code = diagnostic.StatePermissions
+		}
+		return State{}, diagnostic.Wrap(code, errors.New("open state safely"))
 	}
 
 	mac := requestedMAC
@@ -201,7 +212,7 @@ func Save(path string, s State) error {
 		return fmt.Errorf("encode state: %w", err)
 	}
 	b = append(b, '\n')
-	return savePrivateBytes(path, b, nil)
+	return diagnostic.Wrap(diagnostic.StateWrite, savePrivateBytes(path, b, nil))
 }
 
 // savePrivateBytes is shared by adoption state and the independent receipt.

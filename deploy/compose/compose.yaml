@@ -1,3 +1,4 @@
+# Shared Linux deployment. Keep this project name stable to preserve identity.
 name: nut-2-unifi-ups-gateway
 
 services:

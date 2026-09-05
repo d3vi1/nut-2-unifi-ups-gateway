@@ -5,6 +5,9 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +27,33 @@ func TestHealthcheckUsesConfiguredListener(t *testing.T) {
 	t.Cleanup(func() { _ = server.Close() })
 	if err := runHealthcheck(context.Background(), listener.Addr().String()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStartupErrorsUseSafeReasons(t *testing.T) {
+	t.Run("configuration", func(t *testing.T) {
+		t.Setenv("N2U_UNKNOWN_secret", "private")
+		var stdout, stderr bytes.Buffer
+		if run(context.Background(), nil, &stdout, &stderr) != 2 || !strings.Contains(stderr.String(), "reason=configuration_invalid") || strings.Contains(stderr.String(), "secret") || strings.Contains(stderr.String(), "private") {
+			t.Fatal("configuration diagnostic leaked or lost its reason")
+		}
+	})
+	for _, tt := range []struct {
+		mode   os.FileMode
+		reason string
+	}{{0600, "state_invalid"}, {0644, "state_permissions"}} {
+		t.Run(tt.reason, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "private-state.json")
+			if err := os.WriteFile(path, []byte(`{"secret-password":"private"}`), tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("N2U_STATE_FILE", path)
+			t.Setenv("N2U_INFORM_URL", "http://127.0.0.1:8080/inform")
+			var stdout, stderr bytes.Buffer
+			if run(context.Background(), nil, &stdout, &stderr) != 1 || !strings.Contains(stderr.String(), `"reason":"`+tt.reason+`"`) || strings.Contains(stderr.String(), "secret") || strings.Contains(stderr.String(), "private") {
+				t.Fatal("state diagnostic leaked or lost its reason")
+			}
+		})
 	}
 }
 

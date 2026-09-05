@@ -10,7 +10,7 @@
 
 ## Safety
 
-- [ ] Read-only remains the default.
+- [ ] The runtime still has no NUT power-write path.
 - [ ] No NUT power-write method or controller execution path was added.
 - [ ] No secrets, full identities, firmware, or packet captures are included.
 

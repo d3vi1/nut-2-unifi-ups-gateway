@@ -22,6 +22,14 @@ body:
     validations:
       required: true
   - type: input
+    id: host
+    attributes:
+      label: Gateway host and container engine
+      description: OS and Docker/Compose versions; same-host or remote NUT. No addresses or hostnames.
+      placeholder: Linux / Docker Engine / Compose; remote NUT
+    validations:
+      required: true
+  - type: input
     id: nut
     attributes:
       label: NUT server and driver versions
@@ -40,6 +48,12 @@ body:
       description: Redact all identities and secrets.
     validations:
       required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Fixed diagnostic reason codes
+      description: Optional reason codes and receipt statuses only; no raw NUT output, state files or controller data.
+      placeholder: "reason=nut_unknown_ups"
   - type: textarea
     id: reproduce
     attributes:

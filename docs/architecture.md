@@ -17,14 +17,21 @@ The runtime has five deliberately small components:
 5. An identity-free health/metrics endpoint.
 
 Only the private state volume is writable. The process atomically replaces the
-`0600` state file and may create temporary siblings in that directory; the file
-contains the generated identity and UniFi inform key.
+`0600` adoption state file and may create temporary siblings in that directory;
+the file contains the generated identity and UniFi inform key. Opt-in persistent
+configuration and reported-version receipts use separate private files in the
+same volume. All are instance-specific; no two gateways may share that directory.
+Neither receipt changes the source protocol profile or grants command authority.
 
-## Why host networking on Synology
+## Why host networking on Linux
 
-Synology's local `upsd` may restrict client addresses. A bridge container has a
-different source address even when it targets the NAS, while host networking can
-use loopback exactly as a local client. UniFi discovery also uses UDP broadcast.
+UniFi discovery uses IPv4 UDP broadcast and a route-selected source interface.
+Host networking lets the process use that interface and reach a same-host NUT
+server on loopback. This also suits Synology's address-restricted local `upsd`;
+a bridge container would have a different source address and loopback namespace.
+Remote NUT remains supported through an explicit trusted-network opt-in.
+Non-root process execution does not establish rootless-engine or Docker Desktop
+network compatibility; see [the deployment limits](compatibility.md).
 
 Host networking does not require root here: NUT uses TCP/3493, discovery uses
 UDP/10001, and the health endpoint uses TCP/9199. The supplied Compose

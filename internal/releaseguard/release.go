@@ -374,7 +374,7 @@ func reservationBody(release Context) string {
 }
 
 func boundBody(release Context, binding bindingInput) string {
-	return fmt.Sprintf("%s\n\n# NUT 2 UniFi UPS Gateway %s\n\n- Source tag: `%s`\n- Source commit: `%s`\n- Multi-platform image: `%s@%s`\n- GitHub attestation: %s\n\nThe attached Synology bundle is pinned to the OCI manifest digest above. Verify its attached SHA256SUMS before extraction.", markerLine(release, &binding), release.Version, release.Tag, release.SourceSHA, ImageName, binding.digest, binding.attestationURL)
+	return fmt.Sprintf("%s\n\n# NUT 2 UniFi UPS Gateway %s\n\n- Source tag: `%s`\n- Source commit: `%s`\n- Multi-platform image: `%s@%s`\n- GitHub attestation: %s\n\nThe attached Compose bundle is pinned to the OCI manifest digest above. Verify its attached SHA256SUMS before extraction.", markerLine(release, &binding), release.Version, release.Tag, release.SourceSHA, ImageName, binding.digest, binding.attestationURL)
 }
 
 func releaseTitle(release Context) string {

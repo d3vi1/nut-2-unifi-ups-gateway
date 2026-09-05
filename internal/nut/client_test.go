@@ -3,11 +3,14 @@ package nut
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 )
 
 func TestPollAuthenticatesAndParsesQuotedVariables(t *testing.T) {
@@ -71,7 +74,7 @@ func TestPollRejectsDuplicateAndOversizedData(t *testing.T) {
 			server.reply(`VAR ups ups.status "OB"`)
 		})
 		client := mustClient(t, Config{Address: address, UPSName: "ups"})
-		if _, err := client.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		if _, err := client.Poll(context.Background()); err == nil || diagnostic.Reason(err, diagnostic.Internal) != "nut_protocol" || !strings.Contains(errors.Unwrap(err).Error(), "duplicate") {
 			t.Fatalf("expected duplicate rejection, got %v", err)
 		}
 	})
@@ -106,7 +109,7 @@ func TestPollRejectsDuplicateAndOversizedData(t *testing.T) {
 			UPSName:       "ups",
 			MaxTotalBytes: 512,
 		})
-		if _, err := client.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "byte limit") {
+		if _, err := client.Poll(context.Background()); err == nil || diagnostic.Reason(err, diagnostic.Internal) != "nut_protocol" || !strings.Contains(errors.Unwrap(err).Error(), "byte limit") {
 			t.Fatalf("expected total byte limit rejection, got %v", err)
 		}
 	})
@@ -123,7 +126,7 @@ func TestPollRejectsDuplicateAndOversizedData(t *testing.T) {
 			UPSName:       "ups",
 			MaxTotalBytes: 512,
 		})
-		if _, err := client.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "byte limit") {
+		if _, err := client.Poll(context.Background()); err == nil || diagnostic.Reason(err, diagnostic.Internal) != "nut_protocol" || !strings.Contains(errors.Unwrap(err).Error(), "byte limit") {
 			t.Fatalf("expected padded wire line rejection, got %v", err)
 		}
 	})
@@ -149,6 +152,29 @@ func TestAuthenticationErrorDoesNotExposePassword(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "swordfish") {
 		t.Fatalf("password leaked in error: %v", err)
+	}
+}
+
+func TestPollDiagnosticCodesDoNotEchoServerInput(t *testing.T) {
+	for _, tt := range []struct{ reply, reason string }{
+		{"ERR ACCESS-DENIED", "nut_auth"},
+		{"ERR UNKNOWN-UPS", "nut_unknown_ups"},
+		{"ERR DATA-STALE", "nut_unavailable"},
+		{"ERR DRIVER-NOT-CONNECTED", "nut_unavailable"},
+		{"ERR secret-serial-password", "nut_protocol"},
+		{"VAR secret-serial-password", "nut_protocol"},
+	} {
+		t.Run(tt.reason+tt.reply, func(t *testing.T) {
+			address := serveOnce(t, func(connection net.Conn) {
+				server := newTestServer(t, connection)
+				server.expect("LIST VAR ups")
+				server.reply(tt.reply)
+			})
+			_, err := mustClient(t, Config{Address: address, UPSName: "ups"}).Poll(context.Background())
+			if err == nil || err.Error() != tt.reason || diagnostic.Reason(err, diagnostic.Internal) != tt.reason {
+				t.Fatalf("incorrect fixed diagnostic: %v", err)
+			}
+		})
 	}
 }
 

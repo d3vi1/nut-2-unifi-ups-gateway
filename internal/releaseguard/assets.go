@@ -18,8 +18,8 @@ const (
 	maxReleaseAssetSize   = 128 << 20
 	maxExpandedBundleSize = 4 << 20
 	maxBundleMemberSize   = 1 << 20
-	composeSHA256         = "8c5f4850483067d23e60d802da3910ca2ceeb769b6f4007322802b4e67ad88e7"
-	composeAuthSHA256     = "dff79bb144fc83589d3c4eb0d7a3b73ef25051db9db59ff71273cd606e6f7cfd"
+	composeSHA256         = "f721038707cb165602cf2afa3a58f985b348c84d7bafc3a250293b4be5dd06c8"
+	composeAuthSHA256     = "4514e6f198ce9227fa409e29c8c99b8a1141284456e4adcb2e4a05c286b0ae40"
 )
 
 type localAsset struct {
@@ -46,8 +46,8 @@ func loadReleaseAssets(release Context, binding bindingInput, getenv func(string
 		return nil, errors.New("N2U_RELEASE_ASSETS must contain exactly two distinct paths")
 	}
 	wanted := map[string]bool{
-		fmt.Sprintf("nut-2-unifi-ups-gateway-%s-synology.tar.gz", release.Tag):     false,
-		fmt.Sprintf("nut-2-unifi-ups-gateway-%s-synology.SHA256SUMS", release.Tag): false,
+		fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose.tar.gz", release.Tag):     false,
+		fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose.SHA256SUMS", release.Tag): false,
 	}
 	assets := make([]localAsset, 0, len(paths))
 	for _, path := range paths {
@@ -80,7 +80,7 @@ func loadReleaseAssets(release Context, binding bindingInput, getenv func(string
 	if string(checksums.data) != expectedChecksum {
 		return nil, errors.New("SHA256SUMS does not exactly bind the release bundle")
 	}
-	if err := verifySynologyBundle(release, binding, bundle.data); err != nil {
+	if err := verifyComposeBundle(release, binding, bundle.data); err != nil {
 		return nil, err
 	}
 	return assets, nil
@@ -109,16 +109,16 @@ func snapshotReleaseAsset(path, name string) (localAsset, error) {
 	return localAsset{name: name, size: after.Size(), digest: "sha256:" + hex.EncodeToString(digest[:]), data: data}, nil
 }
 
-func verifySynologyBundle(release Context, binding bindingInput, compressed []byte) error {
+func verifyComposeBundle(release Context, binding bindingInput, compressed []byte) error {
 	compressedReader := bytes.NewReader(compressed)
 	gzipReader, err := gzip.NewReader(compressedReader)
 	if err != nil {
-		return errors.New("Synology release bundle is not valid gzip")
+		return errors.New("Compose release bundle is not valid gzip")
 	}
 	gzipReader.Multistream(false)
 	limited := &io.LimitedReader{R: gzipReader, N: maxExpandedBundleSize + 1}
 	tarReader := tar.NewReader(limited)
-	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-synology", release.Tag)
+	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
 	expected := map[string]byte{
 		root + "/":                     tar.TypeDir,
 		root + "/.env":                 tar.TypeReg,
@@ -135,22 +135,22 @@ func verifySynologyBundle(release Context, binding bindingInput, compressed []by
 		}
 		if err != nil {
 			gzipReader.Close()
-			return errors.New("Synology release bundle contains an invalid tar stream")
+			return errors.New("Compose release bundle contains an invalid tar stream")
 		}
 		wantedType, exists := expected[header.Name]
 		if !exists || header.Typeflag != wantedType || header.Uid != 0 || header.Gid != 0 || header.Size < 0 || header.Size > maxBundleMemberSize {
 			gzipReader.Close()
-			return errors.New("Synology release bundle contains an unexpected member")
+			return errors.New("Compose release bundle contains an unexpected member")
 		}
 		if _, duplicate := seen[header.Name]; duplicate {
 			gzipReader.Close()
-			return errors.New("Synology release bundle contains a duplicate member")
+			return errors.New("Compose release bundle contains a duplicate member")
 		}
 		seen[header.Name] = struct{}{}
 		if wantedType == tar.TypeDir {
 			if header.Size != 0 || header.Mode&0o7777 != 0o755 {
 				gzipReader.Close()
-				return errors.New("Synology release bundle root has invalid metadata")
+				return errors.New("Compose release bundle root has invalid metadata")
 			}
 			continue
 		}
@@ -160,32 +160,32 @@ func verifySynologyBundle(release Context, binding bindingInput, compressed []by
 		}
 		if header.Mode&0o7777 != expectedMode || header.Size == 0 {
 			gzipReader.Close()
-			return errors.New("Synology release bundle member has invalid metadata")
+			return errors.New("Compose release bundle member has invalid metadata")
 		}
 		member, err := io.ReadAll(io.LimitReader(tarReader, maxBundleMemberSize+1))
 		if err != nil || int64(len(member)) != header.Size || len(member) > maxBundleMemberSize {
 			gzipReader.Close()
-			return errors.New("Synology release bundle member exceeds its safety bound")
+			return errors.New("Compose release bundle member exceeds its safety bound")
 		}
 		contents[header.Name] = member
 	}
 	if len(seen) != len(expected) || limited.N <= 0 {
 		gzipReader.Close()
-		return errors.New("Synology release bundle member set is incomplete")
+		return errors.New("Compose release bundle member set is incomplete")
 	}
 	trailing, err := io.ReadAll(limited)
 	if err != nil || limited.N <= 0 {
 		gzipReader.Close()
-		return errors.New("Synology release bundle exceeds its expansion bound")
+		return errors.New("Compose release bundle exceeds its expansion bound")
 	}
 	for _, value := range trailing {
 		if value != 0 {
 			gzipReader.Close()
-			return errors.New("Synology release bundle contains data after the tar terminator")
+			return errors.New("Compose release bundle contains data after the tar terminator")
 		}
 	}
 	if err := gzipReader.Close(); err != nil || compressedReader.Len() != 0 {
-		return errors.New("Synology release bundle contains trailing or concatenated gzip data")
+		return errors.New("Compose release bundle contains trailing or concatenated gzip data")
 	}
 	if err := verifyBundleEnvironment(release, binding, contents[root+"/.env"]); err != nil {
 		return err
@@ -193,31 +193,31 @@ func verifySynologyBundle(release Context, binding bindingInput, compressed []by
 	composeDigest := sha256.Sum256(contents[root+"/compose.yaml"])
 	composeAuthDigest := sha256.Sum256(contents[root+"/compose.auth.yaml"])
 	if hex.EncodeToString(composeDigest[:]) != composeSHA256 || hex.EncodeToString(composeAuthDigest[:]) != composeAuthSHA256 {
-		return errors.New("Synology compose files do not match the reviewed release templates")
+		return errors.New("Compose files do not match the reviewed release templates")
 	}
 	expectedMetadata := fmt.Sprintf("Release tag: %s\nSource commit: %s\nImage: %s@%s\nRetention anchor: %s:%s\nWorkflow run: %d (attempt %d)\n", release.Tag, release.SourceSHA, ImageName, binding.digest, ImageName, release.OCITag(), release.RunID, release.RunAttempt)
 	if string(contents[root+"/RELEASE-METADATA.txt"]) != expectedMetadata {
-		return errors.New("Synology release metadata does not match this workflow")
+		return errors.New("Compose release metadata does not match this workflow")
 	}
 	return nil
 }
 
 func verifyBundleEnvironment(release Context, binding bindingInput, data []byte) error {
 	if len(data) == 0 || bytes.IndexByte(data, 0) >= 0 || bytes.IndexByte(data, '\r') >= 0 {
-		return errors.New("Synology bundle environment is malformed")
+		return errors.New("Compose bundle environment is malformed")
 	}
 	if string(data) != expectedBundleEnvironment(release, binding) {
-		return errors.New("Synology bundle environment does not match the reviewed digest-pinned template")
+		return errors.New("Compose bundle environment does not match the reviewed digest-pinned template")
 	}
 	return nil
 }
 
 func expectedBundleEnvironment(release Context, binding bindingInput) string {
 	return fmt.Sprintf(`# Generated for %s; keep the OCI manifest digest pinned.
-# Source-tree example for local development and review. The published Synology
+# Source-tree example for local development and review. The published Compose
 # release bundle replaces this tag with the exact multi-platform OCI digest.
 N2U_IMAGE=%s@%s
-# Same-Synology NUT: keep loopback and the insecure-remote opt-in disabled.
+# Same-host NUT: keep loopback and the insecure-remote opt-in disabled.
 # Remote NUT: replace the address, set the correct UPS name, and set the opt-in
 # to true only on a trusted LAN or VPN. NUT traffic is not encrypted.
 N2U_NUT_ADDRESS=127.0.0.1:3493
@@ -230,18 +230,18 @@ N2U_NUT_ALLOW_INSECURE_REMOTE=false
 # N2U_NUT_PASSWORD_SECRET_FILE=/absolute/path/to/nut_password
 N2U_UNIFI_MODEL=USWDA26
 N2U_UNIFI_VERSION=1.6.1
-# Interoperability experiment for rename-related controller configuration.
+# Legacy single-field experiment, not the recommended onboarding path.
 # Whether it clears Getting Ready remains CANDIDATE; it mirrors cfgversion only.
-# It does not promise a Network UI transition.
-# Enable only for authenticated GCM under a non-default key on a trusted LAN.
+# It does not promise a Network UI transition. Leave false for receipt modes.
 N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC=false
-# Multi-field configuration receipts: off, memory (first test), or persistent.
+# Multi-field configuration receipts: off, memory, or persistent.
 # Requires the volatile option above to stay false. Trusted management LAN only.
-# CANDIDATE until live acceptance; received settings are not applied.
+# Network 10.6.102 convergence observed; received settings are not applied.
+# After accepting the trust limits in docs/installation.md, set persistent.
 N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE=off
 # Optional reported-version mirroring, including lower controller-selected targets.
 # Requires persistent configuration receipts; no firmware is downloaded/installed.
-# CANDIDATE until exact-controller acceptance; trusted management LAN only.
+# Network 10.6.102 manual target acceptance observed; other builds/channels unverified.
 N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC=false
 # Experimental: leave false unless a separate, credential-free NUT service was
 # verified from another LAN host at the emulated device IP, served ID, and port.

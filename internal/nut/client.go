@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 )
 
 const (
@@ -124,11 +126,11 @@ func (c *Client) Poll(ctx context.Context) (Snapshot, error) {
 	}
 	defer protocol.close()
 	if err := c.authenticate(protocol); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, classifyPollError(err, diagnostic.NUTAuth)
 	}
 	variables, err := c.listVariables(protocol)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, classifyPollError(err, diagnostic.NUTProtocol)
 	}
 	return Snapshot{
 		UPSName:     c.config.UPSName,
@@ -137,10 +139,25 @@ func (c *Client) Poll(ctx context.Context) (Snapshot, error) {
 	}, nil
 }
 
+func classifyPollError(err error, fallback diagnostic.Code) error {
+	var server *ServerError
+	if errors.As(err, &server) {
+		switch server.Code {
+		case "ACCESS-DENIED", "INVALID-PASSWORD", "PASSWORD-REQUIRED", "USERNAME-REQUIRED":
+			return diagnostic.Wrap(diagnostic.NUTAuth, err)
+		case "UNKNOWN-UPS":
+			return diagnostic.Wrap(diagnostic.NUTUnknownUPS, err)
+		case "DATA-STALE", "DRIVER-NOT-CONNECTED":
+			return diagnostic.Wrap(diagnostic.NUTUnavailable, err)
+		}
+	}
+	return diagnostic.Network(err, diagnostic.NUTDNS, diagnostic.NUTTimeout, fallback)
+}
+
 func (c *Client) connect(ctx context.Context) (*wire, error) {
 	conn, err := c.dialer.DialContext(ctx, "tcp", c.config.Address)
 	if err != nil {
-		return nil, fmt.Errorf("connect to nut server: %w", err)
+		return nil, diagnostic.Network(err, diagnostic.NUTDNS, diagnostic.NUTTimeout, diagnostic.NUTConnect)
 	}
 	deadline := c.now().Add(c.config.Timeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {

@@ -56,17 +56,17 @@ func TestProtocolEvidenceKeepsDeploymentObservationsRedacted(t *testing.T) {
 func TestVolatileCfgVersionCompatibilityIsDefaultOffAndBounded(t *testing.T) {
 	const option = "N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC"
 
-	compose := readRepositoryFile(t, "deploy", "synology", "compose.yaml")
+	compose := readRepositoryFile(t, "deploy", "compose", "compose.yaml")
 	if !strings.Contains(compose, option+": ${"+option+":-false}") {
 		t.Fatalf("Compose does not pass %s through with a false default", option)
 	}
-	example := readRepositoryFile(t, "deploy", "synology", ".env.example")
+	example := readRepositoryFile(t, "deploy", "compose", ".env.example")
 	if !strings.Contains(example, option+"=false") {
-		t.Fatalf("Synology environment example does not keep %s disabled", option)
+		t.Fatalf("Compose environment example does not keep %s disabled", option)
 	}
 	if !strings.Contains(example, "Whether it clears Getting Ready remains CANDIDATE") ||
 		!strings.Contains(example, "does not promise a Network UI transition") {
-		t.Error("Synology environment example presents the option as established interoperability")
+		t.Error("Compose environment example presents the option as established interoperability")
 	}
 
 	configuration := singleSpaced(readRepositoryFile(t, "docs", "configuration.md"))
@@ -105,24 +105,28 @@ func TestVolatileCfgVersionCompatibilityIsDefaultOffAndBounded(t *testing.T) {
 		}
 	}
 
-	readme := readRepositoryFile(t, "README.md")
-	if !strings.Contains(readme, "An observed-symptom case is an already-adopted UPS renamed in Network that remains **Getting Ready**") ||
-		!strings.Contains(readme, option+"=true") {
-		t.Error("README troubleshooting does not expose the narrow rename recovery option")
+	for _, path := range []string{"README.md", "docs/synology.md"} {
+		entry := readRepositoryFile(t, strings.Split(path, "/")...)
+		if !strings.Contains(entry, "installation.md") || strings.Contains(entry, option+"=true") {
+			t.Errorf("%s must route onboarding through the shared guide, not the legacy experiment", path)
+		}
 	}
-	synology := readRepositoryFile(t, "docs", "synology.md")
-	if !strings.Contains(synology, "An observed-symptom case is an adopted UPS renamed in Network that remains **Getting Ready**") ||
-		!strings.Contains(synology, option+"=true") {
-		t.Error("Synology troubleshooting does not expose the narrow rename recovery option")
+	installation := readRepositoryFile(t, "docs", "installation.md")
+	for _, required := range []string{
+		"N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE=persistent",
+		option + "=false",
+		"N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC=true",
+		"trusted management LAN",
+		"does not prove",
+		"regress reported state",
+	} {
+		if !strings.Contains(installation, required) {
+			t.Errorf("shared onboarding is missing %q", required)
+		}
 	}
 }
 
 func TestVolatileCfgVersionLiveEfficacyRemainsCandidate(t *testing.T) {
-	readme := singleSpaced(readRepositoryFile(t, "README.md"))
-	if !strings.Contains(readme, "Whether it clears **Getting Ready** remains **CANDIDATE** until exact-build live acceptance") {
-		t.Error("README promotes volatile cfgversion sync beyond exact-build live evidence")
-	}
-
 	changelog := singleSpaced(readRepositoryFile(t, "CHANGELOG.md"))
 	if !strings.Contains(changelog, "exact-build live efficacy remains **CANDIDATE**") {
 		t.Error("changelog promotes volatile cfgversion sync beyond exact-build live evidence")
@@ -130,11 +134,6 @@ func TestVolatileCfgVersionLiveEfficacyRemainsCandidate(t *testing.T) {
 	if strings.Contains(changelog, "allowing Network to reconcile configuration-only changes") {
 		t.Error("changelog still claims unvalidated live reconciliation efficacy")
 	}
-	synology := singleSpaced(readRepositoryFile(t, "docs", "synology.md"))
-	if !strings.Contains(synology, "Whether it clears **Getting Ready** remains **CANDIDATE** until exact-build live acceptance") {
-		t.Error("Synology troubleshooting promotes volatile cfgversion sync beyond exact-build live evidence")
-	}
-
 	protocol := singleSpaced(readRepositoryFile(t, "docs", "protocol-evidence.md"))
 	want := "| Volatile plain-HTTP GCM `cfgversion` synchronization | **CANDIDATE**; explicit default-off compatibility option with automated coverage, pending live rename-recovery acceptance |"
 	if !strings.Contains(protocol, want) {
@@ -171,13 +170,17 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 	// their exact bytes so every wording change requires an explicit review and
 	// digest update instead of relying on an incomplete natural-language parser.
 	expected := map[string]string{
-		"CHANGELOG.md":                 "aa3b88f78f71643ebf12fc95780e31440d887209b61bb8599bdd6fd51bf3992b",
-		"README.md":                    "8ccac41cb2e4183cbca315aeb11f4becf47fa69a5832619d23dfe747a2e2652e",
-		"SECURITY.md":                  "275f4f6e2e850093ca7cd9ee87064d772384a4579f4844b336b4d3de0d6a2e7d",
-		"deploy/synology/.env.example": "9f864d439c23f9c36016c1e9410331639f0682f5838279a654ef808e8106c00c",
-		"docs/configuration.md":        "01e7dc9d9c9f9a820cee796a70e20b039eec4a631507c0ca5dc010d7bd2630da",
-		"docs/protocol-evidence.md":    "780f180c52bff62ad4f78e0c9045f9a319af2dc36f0ea7531539643ae1b75f95",
-		"docs/synology.md":             "2d91d86ea1541ff617e5e9793d0042ada733ce6b416ed4b7147710a462b53788",
+		"CHANGELOG.md":                "fa44ac64335b48244e9e16c27327aa6386e98db822b33b34c969026c872f6902",
+		"README.md":                   "8a1ed91418179a6672dc8edae134bf6e43da0510a3009cf54589668cc5e7f144",
+		"SECURITY.md":                 "275f4f6e2e850093ca7cd9ee87064d772384a4579f4844b336b4d3de0d6a2e7d",
+		"deploy/compose/.env.example": "0739ab28e9a9659e064a89af1c121d8a8f30647d974b9805427437e863aff111",
+		"docs/configuration.md":       "a39c3e513394c442cc8dbb63f0397d475e968d24b44fdc150365efa603620b15",
+		"docs/protocol-evidence.md":   "cf20926b280ce8fd4280834a3e06a5e2c529347f2c9de9ca5efb4e8df5059b60",
+		"docs/synology.md":            "32edcae382bb4b3985e1669c8689eb87104dcdf032499d372c6dd7345f73fba0",
+		"docs/installation.md":        "5c649964d14b55ef533cb1277f189c23d903d5860f723dea74c1a83b8d9ee111",
+		"docs/compatibility.md":       "17eaa40a14845163a475c075e9f0f04dbae7d039d8d8b7684c9e2594722ae45c",
+		"docs/troubleshooting.md":     "f60ff17228a0b6b411fa7bb2bd95af6226280f5c3d7f44b342e44f0631bd980e",
+		"docs/releasing.md":           "17b303ec840f0c943fd4bf357cd76c4f42073282ad4062e2590d5401648e7e3a",
 	}
 	for path, want := range expected {
 		document := readRepositoryFile(t, strings.Split(path, "/")...)
@@ -188,8 +191,8 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 	}
 }
 
-func TestSynologyUpdateAndRollbackUseVersionMatchedDeploymentSets(t *testing.T) {
-	document := readRepositoryFile(t, "docs", "synology.md")
+func TestSharedUpdateAndRollbackUseVersionMatchedDeploymentSets(t *testing.T) {
+	document := readRepositoryFile(t, "docs", "installation.md")
 	update := singleSpaced(markdownSection(t, document, "## Update", "## Roll back"))
 	rollback := singleSpaced(markdownSection(t, document, "## Roll back", ""))
 
@@ -228,7 +231,7 @@ func TestSynologyUpdateAndRollbackUseVersionMatchedDeploymentSets(t *testing.T) 
 	}
 
 	if regexp.MustCompile(`(?m)^docker compose[^\n]*--volumes(?:\s|$)`).MatchString(document) {
-		t.Error("Synology guide contains a destructive Compose command with --volumes")
+		t.Error("Shared guide contains a destructive Compose command with --volumes")
 	}
 }
 

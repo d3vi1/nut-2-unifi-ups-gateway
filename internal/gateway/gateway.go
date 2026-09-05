@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/config"
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/health"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/model"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/nut"
@@ -366,7 +367,7 @@ func (g *Gateway) PollOnce(ctx context.Context) error {
 		g.upstreamOK = false
 		g.mu.Unlock()
 		g.monitor.MarkPoll(now, false)
-		return errors.New("NUT observation is not semantically available")
+		return diagnostic.Wrap(diagnostic.NUTTelemetry, errors.New("NUT observation is not semantically available"))
 	}
 	g.mu.Lock()
 	g.latest = snapshot
@@ -395,12 +396,12 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	g.mu.RUnlock()
 	now := g.now().UTC()
 	if !haveLatest || !upstreamOK {
-		return inform.Outcome{}, errors.New("inform skipped without a current valid NUT observation")
+		return inform.Outcome{}, diagnostic.Wrap(diagnostic.NUTTelemetry, errors.New("inform skipped without a current valid NUT observation"))
 	}
 
 	observation := g.mapObservation(snapshot, now)
 	if observation.Availability != model.AvailabilityAvailable {
-		return inform.Outcome{}, errors.New("inform skipped because NUT telemetry is not current")
+		return inform.Outcome{}, diagnostic.Wrap(diagnostic.NUTTelemetry, errors.New("inform skipped because NUT telemetry is not current"))
 	}
 	reportState := persistent
 	reportState.Adoption.CfgVersion = reportedCfgVersion
@@ -551,7 +552,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	}
 	if adoptionChanged {
 		if err := g.saveState(g.configuration.Runtime.StateFile, nextPersistent); err != nil {
-			return inform.Outcome{}, err
+			return inform.Outcome{}, diagnostic.Wrap(diagnostic.StateWrite, err)
 		}
 	}
 	g.mu.Lock()
@@ -597,12 +598,12 @@ func (g *Gateway) Cycle(ctx context.Context) (inform.Outcome, error) {
 func (g *Gateway) Run(ctx context.Context) error {
 	healthListener, err := net.Listen("tcp", g.configuration.Runtime.HealthAddress)
 	if err != nil {
-		return errors.New("bind health listener")
+		return diagnostic.Wrap(diagnostic.HealthBind, errors.New("bind health listener"))
 	}
 	discoverySocket, err := openDiscoveryBroadcaster(g.network.DeviceIP)
 	if err != nil {
 		_ = healthListener.Close()
-		return err
+		return diagnostic.Wrap(diagnostic.DiscoveryBind, err)
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -657,7 +658,7 @@ func (g *Gateway) pollLoop(ctx context.Context, initialPollDone chan<- struct{})
 	pollTicker := time.NewTicker(g.configuration.Runtime.PollInterval)
 	defer pollTicker.Stop()
 	if err := g.PollOnce(ctx); err != nil {
-		g.logger.Warn("NUT poll failed", "component", "nut")
+		g.logPollFailure(err)
 	}
 	close(initialPollDone)
 	for {
@@ -666,7 +667,7 @@ func (g *Gateway) pollLoop(ctx context.Context, initialPollDone chan<- struct{})
 			return
 		case <-pollTicker.C:
 			if err := g.PollOnce(ctx); err != nil {
-				g.logger.Warn("NUT poll failed", "component", "nut")
+				g.logPollFailure(err)
 			}
 		}
 	}
@@ -702,7 +703,15 @@ func (g *Gateway) logInformFailure(err error) {
 		g.logger.Debug("controller inform pending or device profile unrecognized", "component", "unifi")
 		return
 	}
-	g.logger.Warn("controller inform failed", "component", "unifi")
+	reason := diagnostic.Reason(err, diagnostic.ControllerProtocol)
+	if errors.Is(err, ErrControllerResponseReplay) {
+		reason = diagnostic.ControllerReplay.String()
+	}
+	g.logger.Warn("controller inform failed", "component", "unifi", "reason", reason)
+}
+
+func (g *Gateway) logPollFailure(err error) {
+	g.logger.Warn("NUT poll failed", "component", "nut", "reason", diagnostic.Reason(err, diagnostic.NUTProtocol))
 }
 
 func (g *Gateway) announcementLoop(ctx context.Context, writer discovery.PacketWriter) {

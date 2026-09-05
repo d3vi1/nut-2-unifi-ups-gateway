@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/unifi/inform"
 )
 
@@ -103,14 +104,14 @@ func (c *HTTPController) Exchange(ctx context.Context, endpoint string, packet [
 
 	response, err := c.client.Do(request)
 	if err != nil {
-		return nil, errors.New("controller request failed")
+		return nil, diagnostic.Network(err, diagnostic.ControllerDNS, diagnostic.ControllerTimeout, diagnostic.ControllerTransport)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNotFound {
 		return nil, &controllerResponseError{cause: ErrAdoptionPending}
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, &controllerResponseError{cause: errors.New("controller returned a non-success status")}
+		return nil, &controllerResponseError{cause: diagnostic.Wrap(diagnostic.ControllerHTTP, errors.New("controller returned a non-success status"))}
 	}
 	if response.ContentLength > maxControllerWireResponse {
 		return nil, &controllerResponseError{cause: errors.New("controller response exceeds limit")}

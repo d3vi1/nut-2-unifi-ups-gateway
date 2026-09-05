@@ -470,7 +470,7 @@ func loadTestContext(t *testing.T, environment map[string]string) Context {
 func makeTestAssets(t *testing.T, environment map[string]string, release Context) []localAsset {
 	t.Helper()
 	binding := mustTestBinding(t, release)
-	writeTestAssetPair(t, environment, release, makeTestSynologyBundle(t, release, binding, nil))
+	writeTestAssetPair(t, environment, release, makeTestComposeBundle(t, release, binding, nil))
 	assets, err := loadReleaseAssets(release, binding, mapLookup(environment))
 	if err != nil {
 		t.Fatal(err)
@@ -481,8 +481,8 @@ func makeTestAssets(t *testing.T, environment map[string]string, release Context
 func writeTestAssetPair(t *testing.T, environment map[string]string, release Context, bundle []byte) {
 	t.Helper()
 	directory := t.TempDir()
-	bundleName := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-synology.tar.gz", release.Tag)
-	checksumName := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-synology.SHA256SUMS", release.Tag)
+	bundleName := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose.tar.gz", release.Tag)
+	checksumName := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose.SHA256SUMS", release.Tag)
 	bundlePath := filepath.Join(directory, bundleName)
 	checksumPath := filepath.Join(directory, checksumName)
 	digest := sha256.Sum256(bundle)
@@ -511,9 +511,9 @@ func mustTestBinding(t *testing.T, release Context) bindingInput {
 	return binding
 }
 
-func testSynologyMembers(t *testing.T, release Context, binding bindingInput) map[string]testBundleMember {
+func testComposeMembers(t *testing.T, release Context, binding bindingInput) map[string]testBundleMember {
 	t.Helper()
-	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-synology", release.Tag)
+	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
 	metadata := fmt.Sprintf("Release tag: %s\nSource commit: %s\nImage: %s@%s\nRetention anchor: %s:%s\nWorkflow run: %d (attempt %d)\n", release.Tag, release.SourceSHA, ImageName, binding.digest, ImageName, release.OCITag(), release.RunID, release.RunAttempt)
 	return map[string]testBundleMember{
 		root + "/": {mode: 0o755, typeflag: tar.TypeDir},
@@ -523,10 +523,10 @@ func testSynologyMembers(t *testing.T, release Context, binding bindingInput) ma
 		},
 		root + "/compose.yaml": {
 			mode: 0o644, typeflag: tar.TypeReg,
-			data: mustReadTestFile(t, "../../deploy/synology/compose.yaml"),
+			data: mustReadTestFile(t, "../../deploy/compose/compose.yaml"),
 		},
 		root + "/compose.auth.yaml": {
-			mode: 0o644, typeflag: tar.TypeReg, data: mustReadTestFile(t, "../../deploy/synology/compose.auth.yaml"),
+			mode: 0o644, typeflag: tar.TypeReg, data: mustReadTestFile(t, "../../deploy/compose/compose.auth.yaml"),
 		},
 		root + "/RELEASE-METADATA.txt": {
 			mode: 0o644, typeflag: tar.TypeReg, data: []byte(metadata),
@@ -543,16 +543,16 @@ func mustReadTestFile(t *testing.T, path string) []byte {
 	return data
 }
 
-func makeTestSynologyBundle(t *testing.T, release Context, binding bindingInput, mutate func(map[string]testBundleMember)) []byte {
+func makeTestComposeBundle(t *testing.T, release Context, binding bindingInput, mutate func(map[string]testBundleMember)) []byte {
 	t.Helper()
-	members := testSynologyMembers(t, release, binding)
+	members := testComposeMembers(t, release, binding)
 	if mutate != nil {
 		mutate(members)
 	}
 	var compressed bytes.Buffer
 	gzipWriter := gzip.NewWriter(&compressed)
 	tarWriter := tar.NewWriter(gzipWriter)
-	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-synology", release.Tag)
+	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
 	order := []string{root + "/", root + "/.env", root + "/compose.yaml", root + "/compose.auth.yaml", root + "/RELEASE-METADATA.txt"}
 	for name := range members {
 		found := false
@@ -890,10 +890,10 @@ func TestChecksumAssetMustBindBundle(t *testing.T) {
 	}
 }
 
-func TestSynologyBundleMustBindImageAndExactTopology(t *testing.T) {
+func TestComposeBundleMustBindImageAndExactTopology(t *testing.T) {
 	release := loadTestContext(t, validEnvironment())
 	binding := mustTestBinding(t, release)
-	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-synology", release.Tag)
+	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
 	tests := []struct {
 		name   string
 		mutate func(map[string]testBundleMember)
@@ -954,17 +954,17 @@ func TestSynologyBundleMustBindImageAndExactTopology(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			environment := validEnvironment()
-			bundle := makeTestSynologyBundle(t, release, binding, test.mutate)
+			bundle := makeTestComposeBundle(t, release, binding, test.mutate)
 			writeTestAssetPair(t, environment, release, bundle)
 			if _, err := loadReleaseAssets(release, binding, mapLookup(environment)); err == nil {
-				t.Fatal("invalid Synology bundle unexpectedly succeeded")
+				t.Fatal("invalid Compose bundle unexpectedly succeeded")
 			}
 		})
 	}
 	t.Run("concatenated gzip stream", func(t *testing.T) {
 		environment := validEnvironment()
-		bundle := makeTestSynologyBundle(t, release, binding, nil)
-		bundle = append(bundle, makeTestSynologyBundle(t, release, binding, nil)...)
+		bundle := makeTestComposeBundle(t, release, binding, nil)
+		bundle = append(bundle, makeTestComposeBundle(t, release, binding, nil)...)
 		writeTestAssetPair(t, environment, release, bundle)
 		if _, err := loadReleaseAssets(release, binding, mapLookup(environment)); err == nil {
 			t.Fatal("concatenated gzip bundle unexpectedly succeeded")
@@ -976,7 +976,7 @@ func TestReleaseAssetSymlinkIsRejected(t *testing.T) {
 	environment := validEnvironment()
 	release := loadTestContext(t, environment)
 	binding := mustTestBinding(t, release)
-	writeTestAssetPair(t, environment, release, makeTestSynologyBundle(t, release, binding, nil))
+	writeTestAssetPair(t, environment, release, makeTestComposeBundle(t, release, binding, nil))
 	paths := strings.Split(environment["N2U_RELEASE_ASSETS"], "\n")
 	link := filepath.Join(t.TempDir(), filepath.Base(paths[0]))
 	if err := os.Symlink(paths[0], link); err != nil {
@@ -988,17 +988,17 @@ func TestReleaseAssetSymlinkIsRejected(t *testing.T) {
 	}
 }
 
-func TestReviewedSynologyTemplatesRemainAligned(t *testing.T) {
+func TestReviewedComposeTemplatesRemainAligned(t *testing.T) {
 	release := loadTestContext(t, validEnvironment())
 	binding := mustTestBinding(t, release)
-	compose := mustReadTestFile(t, "../../deploy/synology/compose.yaml")
-	composeAuth := mustReadTestFile(t, "../../deploy/synology/compose.auth.yaml")
+	compose := mustReadTestFile(t, "../../deploy/compose/compose.yaml")
+	composeAuth := mustReadTestFile(t, "../../deploy/compose/compose.auth.yaml")
 	composeDigest := sha256.Sum256(compose)
 	composeAuthDigest := sha256.Sum256(composeAuth)
 	if hex.EncodeToString(composeDigest[:]) != composeSHA256 || hex.EncodeToString(composeAuthDigest[:]) != composeAuthSHA256 {
 		t.Fatal("reviewed compose digest constants are stale")
 	}
-	sourceEnvironment := string(mustReadTestFile(t, "../../deploy/synology/.env.example"))
+	sourceEnvironment := string(mustReadTestFile(t, "../../deploy/compose/.env.example"))
 	generated := fmt.Sprintf("# Generated for %s; keep the OCI manifest digest pinned.\n", release.Tag) + strings.Replace(sourceEnvironment, "N2U_IMAGE="+ImageName+":edge", "N2U_IMAGE="+ImageName+"@"+binding.digest, 1)
 	if generated != expectedBundleEnvironment(release, binding) {
 		t.Fatal("reviewed environment template is stale")

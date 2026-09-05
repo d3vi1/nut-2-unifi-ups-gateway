@@ -7,16 +7,21 @@ All notable changes are documented here. The project follows
 
 ### Added
 
+- Fixed, identity-free diagnostic reason codes for NUT, controller, startup and
+  state failures. Underlying errors remain available to internal typed checks,
+  but runtime logs never print their arbitrary text.
 - A default-off, persistent mirror of the firmware version selected by an
   authenticated HTTP/GCM controller. Lower channel targets are accepted too;
   only reported version text changes. No firmware is fetched or installed, and
   source profiles, capabilities, adoption and power control remain unchanged.
-  Exact-build upgrade/downgrade convergence remains **CANDIDATE**.
+  Manual target acceptance and configuration convergence were **OBSERVED** on
+  Network 10.6.102; live target restart and downgrade remain **CANDIDATE**.
 - A separate default-off multi-field configuration receipt policy, with memory
   and persistent modes. It handles the observed management envelope without
   granting command authority. A private, bounded receipt survives restart while
-  keeping adoption state v1 unchanged. Exact-build Online/rename/restart
-  acceptance remains **CANDIDATE**.
+  keeping adoption state v1 unchanged. Network 10.6.102 marker convergence,
+  memory-mode Online/pairings and persistent storage/reload were **OBSERVED**
+  separately; this is not universal UI/rename/restart acceptance.
 - Identity-free receipt-status and ignored-setting diagnostics, atomic-storage
   fault tests, and bounded transition-nonce replay protection across restart.
 
@@ -44,6 +49,12 @@ All notable changes are documented here. The project follows
 
 ### Changed
 
+- A generic Linux Compose bundle replaces the Synology-named release bundle.
+  Templates move to `deploy/compose`; the Compose project name and existing
+  named state volume remain unchanged. Use a version-matched deployment set.
+- A shorter, user-oriented README with a Mermaid overview, shared installation,
+  troubleshooting and compatibility guides, plus separate Synology notes and
+  maintainer release instructions.
 - `USWDA26` and `USPDA2C` now act as controller-recognized wire carriers rather
   than templates for valid observed topology; absent NUT topology keeps only an
   AC-compatible structural fallback (`USWDA26` 4+4 or nine singleton
@@ -82,7 +93,7 @@ All notable changes are documented here. The project follows
   connection cap, disables connection reuse, and retains its time and header
   bounds.
 - Tagged releases now publish an attested multi-platform digest and a
-  checksum-verified Synology bundle whose generated `.env` uses that exact OCI
+  checksum-verified Compose bundle whose generated `.env` uses that exact OCI
   digest. Compose fails closed if `N2U_IMAGE` is absent instead of pulling a
   mutable fallback tag.
 - The Dockerfile frontend, Buildx client artifact, and BuildKit builder image
@@ -115,7 +126,7 @@ All notable changes are documented here. The project follows
   attestation offline against a review-pinned Sigstore root and the expected
   workflow/source identity; the local guard adds stricter provenance checks.
   The controller also validates the exact four-platform OCI index and the
-  digest-pinned contents of the Synology archive before publication. Transport,
+  digest-pinned contents of the Compose archive before publication. Transport,
   schema, authentication, timeout, or partial-state uncertainty fails closed.
 - Public protocol evidence labels site-derived compatibility observations as
   redacted and omits deployment identities and inventory. Its focused

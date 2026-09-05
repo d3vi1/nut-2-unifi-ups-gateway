@@ -83,8 +83,7 @@ mirror rejects that shape. USWDA26 firmware assigns its marker before applying
 `system_cfg`, which can subsequently fail; receipt is not proof of applied
 settings. The new mode records only the marker and replay metadata, optionally
 in a separate private receipt file. No controller settings become executable.
-Online/rename/restart efficacy remains **CANDIDATE** pending live acceptance;
-authenticated GCM alone does not establish ordering or freshness.
+Authenticated GCM alone does not establish ordering or freshness.
 
 A subsequent scoped capture contained six top-level string fields: `_type`,
 `mgmt_cfg`, `system_cfg`, `cfgversion`, `server_time_in_utc`, and `blocked_sta`.
@@ -92,7 +91,14 @@ Two authenticated responses were rejected by the initial three-field parser.
 The revised parser accepts the matching outer marker, a 13-digit inert timestamp,
 and an empty blocked-client string; all other top-level fields remain rejected.
 Both captured replies passed the revised parser offline. This proves syntax
-compatibility with that capture, not live Network convergence.
+compatibility with that capture, not by itself live Network convergence.
+
+A later redacted Network 10.6.102 interoperability check **OBSERVED** marker
+convergence and controller provisioning completion. The operator reported Online
+with pairings for the memory-mode configuration. Persistent receipt commit and
+reload after gateway recreation were separately observed. These observations do
+not prove every post-restart UI/rename sequence, another Network build, or physical
+shutdown. No site identity, raw management content or stored marker is published.
 
 ### Controller-selected firmware target evidence
 
@@ -108,8 +114,13 @@ The separate default-off reported-firmware mirror accepts a strict bounded
 target envelope and discards its inert URL, checksum and optional timestamp
 metadata. Tests prove lower targets, private atomic persistence, restart replay
 bounds, no fetch/install/reboot, and version-only payload changes for both
-carriers. Source firmware profiles remain unchanged. Live controller convergence
-and channel switching remain **CANDIDATE**; see
+carriers. Source firmware profiles remain unchanged. A redacted, user-triggered
+Network 10.6.102 manual update **OBSERVED** the reported target change from
+`1.6.1.413` to `1.6.4.432`, a private target-file commit, and subsequent configuration
+convergence without gateway restart. Adoption storage remained unchanged. This
+does not prove target recovery after process restart, a live downgrade/channel
+switch, another carrier, or a completed shutdown. Those live paths remain
+**CANDIDATE** or **BLOCKED_EXTERNAL**, as listed in [Compatibility](compatibility.md); see
 [Configuration](configuration.md#controller-selected-reported-firmware) for the
 trust and rollback limitations.
 
@@ -318,7 +329,8 @@ remain reference evidence rather than operational claims.
 | Reach and pass TNBU/JSON/MAC parsing on Network 10.6.101 | **PROVEN**; controller returns unknown-device HTTP 404 |
 | Adopt and pair through `/inform` | **OBSERVED** in a redacted Network 10.6.102 interoperability sample; the older 10.6.101 test remained a 404 |
 | Volatile plain-HTTP GCM `cfgversion` synchronization | **CANDIDATE**; explicit default-off compatibility option with automated coverage, pending live rename-recovery acceptance |
-| Multi-field configuration receipts, with optional persistence | **CANDIDATE**; automated parser/storage/restart coverage, pending exact-build Online/rename/restart acceptance |
+| Multi-field configuration receipts, with optional persistence | **OBSERVED** marker convergence on Network 10.6.102; memory-mode Online/pairings and persistent storage/reload observed separately, broader UI/restart acceptance unproven |
+| Controller-selected reported firmware | **OBSERVED** manual target acceptance and configuration convergence on Network 10.6.102; firmware-target restart and downgrade remain **CANDIDATE** |
 | Project NUT-observed outlet count, groups, USB type, and meter capability | **CANDIDATE**; automated coverage only, no topology-capable live source acceptance yet |
 | Advertise an independently verified NUT service at the emulated device IP | **CANDIDATE**, explicit opt-in only; default disabled |
 | Trigger UniFi OS shutdown policy from NUT battery state | **BLOCKED_EXTERNAL** until a controlled outage simulation |

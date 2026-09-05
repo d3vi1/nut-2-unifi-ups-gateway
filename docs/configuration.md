@@ -1,5 +1,8 @@
 # Configuration
 
+For first-time setup, use [Install and maintain](installation.md). This page is
+the advanced reference; compatibility options do not grant power-control authority.
+
 Configuration is read once from environment variables. Unknown `N2U_`
 variables should be treated as deployment mistakes. Durations use Go syntax,
 for example `5s`, `2m`, or `500ms`.
@@ -34,6 +37,7 @@ network without transport encryption; it is not suitable for an untrusted LAN.
 | `N2U_INFORM_URL` | `http://unifi:8080/inform` | HTTP(S), `/inform`, no credentials/query/fragment |
 | `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC` | `false` | Boolean; explicit plain-HTTP compatibility opt-in |
 | `N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE` | `off` | `off`, `memory`, or `persistent`; incompatible with the volatile option |
+| `N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC` | `false` | Boolean; requires persistent receipts and trusted-LAN HTTP/GCM |
 | `N2U_INFORM_INTERVAL` | `10s` | 1 second–10 minutes; sole runtime inform cadence |
 | `N2U_INFORM_TIMEOUT` | `10s` | 1 second–1 minute |
 | `N2U_DISCOVERY_INTERVAL` | `30s` | 5 seconds–10 minutes |
@@ -62,6 +66,10 @@ same-key one-way upgrade from CBC to GCM remains available; full post-adoption
 response effects require HTTPS with a certificate trusted by the container.
 
 ### Plain-HTTP GCM cfgversion compatibility
+
+This is the **legacy single-field experiment**, not the recommended onboarding
+path. See [multi-field receipts](#multi-field-configuration-receipts) for the
+controller response shape observed with Network 10.6.102.
 
 `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC` is a narrow, default-off
 interoperability experiment for rename-related configuration changes. Whether
@@ -96,7 +104,10 @@ untrusted or shared network.
 response containing `cfgversion` plus ordinary management fields. It is a
 separate opt-in: leave `N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC=false`.
 The sole-entry volatile experiment above cannot accept this response shape.
-Receipt interoperability remains **CANDIDATE** until exact-build live acceptance.
+Marker convergence was **OBSERVED** with Network 10.6.102. The memory-mode UI
+was reported Online with pairings; persistent receipt storage and reload were
+also observed. This does not prove every rename/restart/UI sequence or acceptance
+on another controller build; see [the evidence matrix](compatibility.md).
 
 | Mode | Behavior |
 |---|---|
@@ -209,8 +220,11 @@ This feature materially influences Network's upgrade/configuration/UI decisions.
 Authenticated GCM does not prove ordering: unseen, evicted, same-target responses
 forgotten after restart, or restored old volumes can regress the reported target.
 A legitimate A-to-B-to-A transition is allowed. Same-version channel changes have
-no separate channel meaning. Interoperability remains **CANDIDATE** until exact
-controller upgrade/downgrade, discovery, Online, rename, pairing and restart tests.
+no separate channel meaning. A user-triggered manual update from reported
+`1.6.1.413` to `1.6.4.432`, followed by configuration convergence, was **OBSERVED**
+with Network 10.6.102. Firmware-target restart/recreation and downgrade/channel
+switching remain **CANDIDATE**, covered by automated tests but not that live test.
+Do not generalize this observation to other builds, carriers or shutdown behavior.
 
 ### Optional NUT Server advertisement
 

@@ -475,13 +475,13 @@ jobs:
           N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
           N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
         run: go run ./cmd/releaseguard verify-bound
-      - name: Assemble digest-pinned Synology release bundle
+      - name: Assemble digest-pinned Compose release bundle
         id: bundle
         shell: bash
         run: |
           set -euo pipefail
 
-          bundle_name="nut-2-unifi-ups-gateway-${N2U_RELEASE_TAG}-synology"
+          bundle_name="nut-2-unifi-ups-gateway-${N2U_RELEASE_TAG}-compose"
           staging_root="$RUNNER_TEMP/n2u-release"
           bundle_dir="$staging_root/$bundle_name"
           assets_dir="$staging_root/assets"
@@ -489,8 +489,8 @@ jobs:
           checksum_path="$assets_dir/$bundle_name.SHA256SUMS"
 
           mkdir -p "$bundle_dir" "$assets_dir"
-          cp deploy/synology/compose.yaml "$bundle_dir/compose.yaml"
-          cp deploy/synology/compose.auth.yaml "$bundle_dir/compose.auth.yaml"
+          cp deploy/compose/compose.yaml "$bundle_dir/compose.yaml"
+          cp deploy/compose/compose.auth.yaml "$bundle_dir/compose.auth.yaml"
           {
             printf '# Generated for %s; keep the OCI manifest digest pinned.\n' "$N2U_RELEASE_TAG"
             awk -v image="$IMAGE_NAME@$IMAGE_DIGEST" '
@@ -501,7 +501,7 @@ jobs:
               }
               { print }
               END { if (replaced != 1) exit 1 }
-            ' deploy/synology/.env.example
+            ' deploy/compose/.env.example
           } > "$bundle_dir/.env"
           chmod 600 "$bundle_dir/.env"
 

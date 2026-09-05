@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/config"
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/gateway"
 )
 
@@ -55,7 +56,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	configuration, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(stderr, "configuration is invalid:", err)
+		fmt.Fprintln(stderr, "configuration is invalid; reason="+diagnostic.Reason(err, diagnostic.Configuration))
 		return 2
 	}
 	level, err := parseLogLevel(configuration.LogLevel)
@@ -66,12 +67,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: level}))
 	service, err := gateway.New(ctx, configuration, gateway.Options{Logger: logger})
 	if err != nil {
-		logger.Error("gateway initialization failed")
+		logger.Error("gateway initialization failed", "reason", diagnostic.Reason(err, diagnostic.Internal))
 		return 1
 	}
 	logger.Info("gateway started", "version", version, "model", configuration.UniFi.Model)
 	if err := service.Run(ctx); err != nil {
-		logger.Error("gateway stopped unexpectedly")
+		logger.Error("gateway stopped unexpectedly", "reason", diagnostic.Reason(err, diagnostic.Internal))
 		return 1
 	}
 	logger.Info("gateway stopped")
