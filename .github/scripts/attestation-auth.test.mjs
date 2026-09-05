@@ -27,7 +27,7 @@ function assertScrubbed(paths) {
   assert.equal(fs.readFileSync(path.join(paths.isolatedDir, 'cli-plugins', 'docker-buildx'), 'utf8'), 'synthetic plugin');
 }
 
-for (const existing of [null, '{\n "auths": {}, "experimental": "enabled"\n}\n', '{"auths":{}}' + ' '.repeat(60000)]) {
+for (const existing of [null, '{\n "auths": {}, "experimental": "enabled"\n}\n', '{"auths":{"https://index.docker.io/v1/":{"auth":"c3ludGhldGljOnRlc3Q="}}}\n', '{"auths":{}}' + ' '.repeat(60000)]) {
   test(`pinned action lookup and exact restore (${existing === null ? 'absent' : existing.length + ' bytes'})`, t => {
     const paths = fixture(t);
     if (existing !== null) original(paths, existing);
@@ -47,7 +47,7 @@ for (const existing of [null, '{\n "auths": {}, "experimental": "enabled"\n}\n',
   });
 }
 
-for (const invalid of ['not-json', '[]', '{"credsStore":"helper"}', '{"credHelpers":{}}', '{"HttpHeaders":{}}', '{"auths":{"ghcr.io":{}}}', '{"auths":{"unrelated.example":{}}}', ' '.repeat(65537)]) {
+for (const invalid of ['not-json', '[]', '{"credsStore":"helper"}', '{"credHelpers":{}}', '{"HttpHeaders":{}}', '{"auths":{"ghcr.io":{}}}', '{"auths":{"https://GHCR.io/v1/":{}}}', '{"auths":{"ghcr.io:443":{}}}', ' '.repeat(65537)]) {
   test('reject default config without overwriting it: ' + invalid.slice(0, 48), t => {
     const paths = fixture(t);
     original(paths, invalid);
