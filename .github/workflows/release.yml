@@ -173,12 +173,11 @@ jobs:
           go-version: "1.27.1"
           check-latest: false
           cache: true
-      - name: Verify the owned empty reservation
+      - name: Verify the protected image source and live policy
         env:
           GH_TOKEN: ${{ github.token }}
-          N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
           N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
-        run: go run ./cmd/releaseguard verify-reserved
+        run: go run ./cmd/releaseguard verify-image-source
       - name: Set up immutable Buildx and BuildKit
         id: buildx
         uses: ./.github/actions/setup-pinned-buildx
@@ -361,7 +360,6 @@ jobs:
           N2U_ATTESTATION_URL: ${{ steps.attest.outputs.attestation-url }}
           N2U_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
           N2U_PUBLICATION_ATTEMPT: ${{ github.run_attempt }}
-          N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}
           N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}
         run: go run ./cmd/releaseguard verify-attestation
       - name: Export bound publication identity

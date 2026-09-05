@@ -68,7 +68,9 @@ func TestReleaseJobsAreMonotonicAndPermissionIsolated(t *testing.T) {
 	assertContainsExactly(t, image, "packages: write", 1)
 	assertContainsExactly(t, image, "contents: write", 0)
 	assertContainsExactly(t, image, "attestations: write", 1)
-	assertContainsExactly(t, image, "go run ./cmd/releaseguard verify-reserved", 1)
+	assertContainsExactly(t, image, "go run ./cmd/releaseguard verify-reserved", 0)
+	assertContainsExactly(t, image, "go run ./cmd/releaseguard verify-image-source", 1)
+	assertContainsExactly(t, image, "N2U_RELEASE_ID:", 0)
 	assertContainsExactly(t, image, "go run ./cmd/releaseguard verify-attestation", 1)
 
 	assertContainsExactly(t, bind, "contents: write", 1)
@@ -196,9 +198,8 @@ func TestReleaseImageHasNoVersionAliasAndUsesPermanentUniqueAnchor(t *testing.T)
 			t.Errorf("Sigstore root verification is missing %q", want)
 		}
 	}
-	verificationStep := image[verify:export]
-	if !strings.Contains(verificationStep, "N2U_RELEASE_ID: ${{ needs.reserve-release.outputs.release_id }}") {
-		t.Fatal("attestation verification is not bound to the numeric reserved draft")
+	if strings.Contains(image, "N2U_RELEASE_ID:") {
+		t.Fatal("image job must not require private-draft access")
 	}
 }
 

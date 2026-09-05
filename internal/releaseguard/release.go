@@ -130,7 +130,10 @@ func (g *Guard) Reserve(ctx context.Context, release Context) error {
 		return errors.New("release trust root changed after draft creation; inspect the remote state")
 	}
 	remote, err := g.getRelease(ctx, release, releaseID)
-	if err != nil || validateRelease(remote, releaseID, release, body, true, false, nil) != nil {
+	if err != nil {
+		return fmt.Errorf("reserved release readback failed before output binding: %w", err)
+	}
+	if validateRelease(remote, releaseID, release, body, true, false, nil) != nil {
 		return errors.New("reserved release changed before output binding; inspect the remote state")
 	}
 	return writeReservationOutputs(release.OutputPath, releaseID, release)
@@ -386,12 +389,14 @@ func releasePath(releaseID int64) string {
 }
 
 func (g *Guard) getRelease(ctx context.Context, release Context, releaseID int64) (releaseWire, error) {
-	// Draft Releases are visible only to repository writers. Use the separate
-	// owner-bound, read-only policy credential for every lookup so the image job
-	// never needs contents:write merely to inspect the reservation.
-	apiResponse, err := g.github.apiJSON(ctx, release.policyToken, http.MethodGet, releasePath(releaseID), nil, nil, http.StatusOK)
+	// Even an owner's fine-grained Contents-read token cannot read a draft.
+	// Keep these lookups in the ephemeral contents-write lifecycle jobs; the
+	// image job never calls this and the long-lived policy PAT stays read-only.
+	apiResponse, err := g.github.apiJSON(ctx, release.token, http.MethodGet, releasePath(releaseID), nil, nil, http.StatusOK)
 	if err != nil {
-		return releaseWire{}, errors.New("numeric release lookup failed")
+		// service errors contain only fixed operation/path/status classifications,
+		// never the API body, headers or credentials.
+		return releaseWire{}, fmt.Errorf("numeric release lookup failed: %w", err)
 	}
 	result, err := decodeRelease(apiResponse.body)
 	if err != nil {

@@ -84,6 +84,9 @@ type fakeGitHub struct {
 	leavePublishedMutable  bool
 	publishMakeLatest      string
 	releasePaths           []string
+	releaseListReads       int
+	numericReadStatus      int
+	releasePatchCount      int
 }
 
 func newFakeGitHub(t *testing.T, release Context) *fakeGitHub {
@@ -118,9 +121,8 @@ func newFakeGitHub(t *testing.T, release Context) *fakeGitHub {
 func (fake *fakeGitHub) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	releaseReadRequest := request.Method == http.MethodGet &&
-		(request.URL.Path == repoPath()+"/releases" || strings.HasPrefix(request.URL.Path, repoPath()+"/releases/"))
-	policyRequest := releaseReadRequest || strings.Contains(request.URL.Path, "/rulesets") || strings.Contains(request.URL.Path, "/immutable-releases") || strings.Contains(request.URL.Path, "/actions/permissions") || strings.Contains(request.URL.Path, "/branches/main")
+	// Draft/list reads need the ephemeral writer, not the read-only PAT.
+	policyRequest := strings.Contains(request.URL.Path, "/rulesets") || strings.Contains(request.URL.Path, "/immutable-releases") || strings.Contains(request.URL.Path, "/actions/permissions") || strings.Contains(request.URL.Path, "/branches/main")
 	expectedToken := fake.releaseContext.token
 	if policyRequest {
 		expectedToken = fake.releaseContext.policyToken
@@ -217,6 +219,7 @@ func (fake *fakeGitHub) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		}
 		writeJSON(writer, http.StatusOK, fake.refResponse())
 	case request.Method == http.MethodGet && request.URL.Path == repoPath()+"/releases":
+		fake.releaseListReads++
 		page, err := strconv.Atoi(request.URL.Query().Get("page"))
 		if err != nil || page <= 0 || request.URL.Query().Get("per_page") != "100" {
 			writeJSON(writer, http.StatusBadRequest, map[string]string{"message": "bad pagination"})
@@ -325,8 +328,13 @@ func (fake *fakeGitHub) handleNumericRelease(writer http.ResponseWriter, request
 	}
 	switch request.Method {
 	case http.MethodGet:
+		if fake.numericReadStatus != 0 {
+			writeJSON(writer, fake.numericReadStatus, map[string]string{"message": "response-body-must-not-leak " + fake.releaseContext.token + fake.releaseContext.policyToken})
+			return
+		}
 		writeJSON(writer, http.StatusOK, fake.releaseResponse())
 	case http.MethodPatch:
+		fake.releasePatchCount++
 		var input map[string]json.RawMessage
 		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 			writeJSON(writer, http.StatusBadRequest, map[string]string{"message": "bad request"})
@@ -683,9 +691,6 @@ func TestTrustPolicyFailsClosed(t *testing.T) {
 		{name: "write default token", configure: func(fake *fakeGitHub) { fake.defaultPermission = "write" }},
 		{name: "approving workflow token", configure: func(fake *fakeGitHub) { fake.canApproveReviews = true }},
 		{name: "existing tag", configure: func(fake *fakeGitHub) { fake.tagExists = true }},
-		{name: "existing draft release", configure: func(fake *fakeGitHub) {
-			fake.release = &fakeReleaseState{id: 77, tag: fake.releaseContext.Tag}
-		}},
 		{name: "advanced main after reservation", reserved: true, configure: func(fake *fakeGitHub) {
 			fake.tagExists = true
 			fake.mainSHA = strings.Repeat("b", 40)

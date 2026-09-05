@@ -43,6 +43,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		err = guard.Reserve(ctx, release)
 	case "verify-reserved":
 		err = guard.VerifyReserved(ctx, release, getenv)
+	case "verify-image-source":
+		err = guard.VerifyImageSource(ctx, release)
 	case "verify-attestation":
 		err = guard.VerifyAttestation(ctx, release, getenv)
 	case "bind":
@@ -66,5 +68,5 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 }
 
 func printUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "usage: releaseguard <trust|reserve|verify-reserved|verify-index|verify-attestation|bind|verify-bound|upload-assets|publish>")
+	fmt.Fprintln(writer, "usage: releaseguard <trust|reserve|verify-reserved|verify-image-source|verify-index|verify-attestation|bind|verify-bound|upload-assets|publish>")
 }

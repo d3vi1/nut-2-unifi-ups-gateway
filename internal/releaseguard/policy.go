@@ -25,8 +25,9 @@ func newGuard(github *service) *Guard {
 	return &Guard{github: github}
 }
 
-// Trust validates the pre-reservation trust root and requires the requested
-// release tag to be absent. Post-reservation commands use trustReserved.
+// Trust validates the read-only preflight and requires the tag to be absent.
+// It cannot establish private-draft absence: Reserve must repeat that check
+// with its ephemeral contents-write token before creating the tag.
 func (g *Guard) Trust(ctx context.Context, release Context) error {
 	if err := g.verifyPolicy(ctx, release); err != nil {
 		return err
@@ -34,10 +35,14 @@ func (g *Guard) Trust(ctx context.Context, release Context) error {
 	if err := g.requireMainTip(ctx, release); err != nil {
 		return err
 	}
-	if err := g.requireTagAbsent(ctx, release); err != nil {
-		return err
-	}
-	return g.requireReleaseTagAbsent(ctx, release)
+	return g.requireTagAbsent(ctx, release)
+}
+
+// VerifyImageSource checks the source, protected tag and policy before image
+// publication, without requiring private-draft access or repository writes.
+// Bind rechecks the exact numeric draft before recording any image binding.
+func (g *Guard) VerifyImageSource(ctx context.Context, release Context) error {
+	return g.trustReserved(ctx, release)
 }
 
 func (g *Guard) trustReserved(ctx context.Context, release Context) error {
@@ -393,7 +398,9 @@ func (g *Guard) requireReleaseTagAbsent(ctx context.Context, release Context) er
 	seenIDs := make(map[int64]struct{})
 	for page := 1; page <= 20; page++ {
 		query := url.Values{"per_page": {"100"}, "page": {strconv.Itoa(page)}}
-		apiResponse, err := g.github.apiJSON(ctx, release.policyToken, http.MethodGet, path, query, nil, http.StatusOK)
+		// Drafts are omitted from lists obtained with a read-only credential.
+		// Only Reserve calls this, in an ephemeral contents-write job.
+		apiResponse, err := g.github.apiJSON(ctx, release.token, http.MethodGet, path, query, nil, http.StatusOK)
 		if err != nil {
 			return errors.New("release tag reservation check failed")
 		}

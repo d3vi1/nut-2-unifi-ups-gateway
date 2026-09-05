@@ -177,10 +177,6 @@ type rekorDSSEBody struct {
 // custom Sigstore root; this intentionally small helper does not embed a
 // rotating Sigstore trust root.
 func (g *Guard) VerifyAttestation(ctx context.Context, release Context, getenv func(string) string) error {
-	releaseID, err := loadReleaseID(getenv)
-	if err != nil {
-		return err
-	}
 	binding, err := loadBinding(release, getenv)
 	if err != nil {
 		return err
@@ -198,13 +194,9 @@ func (g *Guard) VerifyAttestation(ctx context.Context, release Context, getenv f
 	if err := g.requireImageBinding(ctx, release, binding); err != nil {
 		return err
 	}
-	remote, err := g.getRelease(ctx, release, releaseID)
-	if err != nil {
-		return err
-	}
-	if err := validateRelease(remote, releaseID, release, reservationBody(release), true, false, nil); err != nil {
-		return errors.New("attestation verification requires the untouched reserved draft")
-	}
+	// Private-draft validation belongs to Bind's contents-write job. This
+	// image/attestation job must not gain repository write authority merely
+	// to read that draft. A missing/changed draft blocks Bind, not this proof.
 	return nil
 }
 

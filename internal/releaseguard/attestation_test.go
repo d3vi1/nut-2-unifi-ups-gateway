@@ -201,7 +201,7 @@ func TestVerifyAttestationFileBoundsAndPath(t *testing.T) {
 }
 
 func TestVerifyAttestationRepeatsRemoteTrust(t *testing.T) {
-	environment, release, guard, _, closeServer := setupReservedRelease(t)
+	environment, release, guard, fake, closeServer := setupReservedRelease(t)
 	defer closeServer()
 	binding := mustTestBinding(t, release)
 	path := filepath.Join(t.TempDir(), "attestation.json")
@@ -209,8 +209,23 @@ func TestVerifyAttestationRepeatsRemoteTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	environment["N2U_ATTESTATION_BUNDLE"] = path
+	delete(environment, "N2U_RELEASE_ID")
+	fake.mu.Lock()
+	fake.release = nil
+	fake.releasePaths = nil
+	fake.releaseListReads = 0
+	fake.mu.Unlock()
 	if err := guard.VerifyAttestation(t.Context(), release, mapLookup(environment)); err != nil {
 		t.Fatal(err)
+	}
+	if len(fake.releasePaths) != 0 || fake.releaseListReads != 0 {
+		t.Fatal("image attestation verification attempted private-draft inspection")
+	}
+	fake.mu.Lock()
+	fake.mainSHA = strings.Repeat("b", 40)
+	fake.mu.Unlock()
+	if err := guard.VerifyAttestation(t.Context(), release, mapLookup(environment)); err == nil {
+		t.Fatal("attestation verification accepted changed source")
 	}
 }
 
