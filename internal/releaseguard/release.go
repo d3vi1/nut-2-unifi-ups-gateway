@@ -184,9 +184,26 @@ func (g *Guard) Bind(ctx context.Context, release Context, getenv func(string) s
 		return errors.New("only the untouched reserved draft can be bound")
 	}
 	body := boundBody(release, binding)
+	// GitHub may replace an omitted draft tag_name with an untagged-* name.
+	// Preserve every mutable identity field explicitly, as publication does,
+	// while retaining draft=true and make_latest=false at this boundary.
 	patchResponse, err := g.github.apiJSON(ctx, release.token, http.MethodPatch, releasePath(releaseID), nil, struct {
-		Body string `json:"body"`
-	}{Body: body}, http.StatusOK)
+		TagName         string `json:"tag_name"`
+		TargetCommitish string `json:"target_commitish"`
+		Name            string `json:"name"`
+		Body            string `json:"body"`
+		Draft           bool   `json:"draft"`
+		Prerelease      bool   `json:"prerelease"`
+		MakeLatest      string `json:"make_latest"`
+	}{
+		TagName:         release.Tag,
+		TargetCommitish: release.SourceSHA,
+		Name:            releaseTitle(release),
+		Body:            body,
+		Draft:           true,
+		Prerelease:      release.Prerelease,
+		MakeLatest:      "false",
+	}, http.StatusOK)
 	if err != nil {
 		return errors.New("image binding failed; inspect the remote draft before retrying")
 	}
