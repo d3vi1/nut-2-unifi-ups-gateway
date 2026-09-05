@@ -36,7 +36,9 @@ values.
 ## Development setup
 
 Install Go 1.26 or newer as declared in [go.mod](go.mod). CI and release builds
-currently use Go 1.27.1. Then clone your fork and create a focused branch:
+currently use Go 1.27.1. Install Node.js 22 or newer for the CI-only credential
+bridge tests; Node is not needed by the gateway or its container. Then clone
+your fork and create a focused branch:
 
 ```bash
 git clone https://github.com/YOUR-ACCOUNT/nut-2-unifi-ups-gateway.git

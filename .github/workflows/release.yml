@@ -187,6 +187,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare the pinned attestation credential lookup
+        run: node .github/scripts/attestation-auth.mjs prepare
       - name: Compute release metadata
         id: release
         shell: bash
@@ -253,20 +255,8 @@ jobs:
           push-to-registry: true
           create-storage-record: false
       - name: Remove the GHCR publication credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker logout ghcr.io
-          docker_config_file="$DOCKER_CONFIG/config.json"
-          if [[ ! -f "$docker_config_file" ]] ||
-             ! jq --exit-status 'type == "object" and ((.auths // {}) | type == "object" and (has("ghcr.io") | not))' "$docker_config_file" > /dev/null; then
-            echo "The dedicated Docker configuration is invalid or still contains the GHCR credential." >&2
-            exit 1
-          fi
-          if [[ ! -x "$DOCKER_CONFIG/cli-plugins/docker-buildx" ]]; then
-            echo "Removing the GHCR credential damaged the pinned Buildx installation." >&2
-            exit 1
-          fi
+        if: success() || failure()
+        run: node .github/scripts/attestation-auth.mjs cleanup
       - name: Install the pinned GitHub attestation verifier
         shell: bash
         run: |
