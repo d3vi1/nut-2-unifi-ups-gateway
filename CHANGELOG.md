@@ -7,6 +7,11 @@ All notable changes are documented here. The project follows
 
 ### Added
 
+- A default-off, persistent mirror of the firmware version selected by an
+  authenticated HTTP/GCM controller. Lower channel targets are accepted too;
+  only reported version text changes. No firmware is fetched or installed, and
+  source profiles, capabilities, adoption and power control remain unchanged.
+  Exact-build upgrade/downgrade convergence remains **CANDIDATE**.
 - A separate default-off multi-field configuration receipt policy, with memory
   and persistent modes. It handles the observed management envelope without
   granting command authority. A private, bounded receipt survives restart while

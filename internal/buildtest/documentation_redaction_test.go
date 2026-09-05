@@ -171,12 +171,12 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 	// their exact bytes so every wording change requires an explicit review and
 	// digest update instead of relying on an incomplete natural-language parser.
 	expected := map[string]string{
-		"CHANGELOG.md":                 "f82f8e1127dddd6a0424aa4cabb50bbeea3d39dbf1c5f10bb18c490f44b9c683",
-		"README.md":                    "bb59ffc4338a57b0a37c1a203f04ce2dd0595d290044d62e69041d7867975a4c",
+		"CHANGELOG.md":                 "aa3b88f78f71643ebf12fc95780e31440d887209b61bb8599bdd6fd51bf3992b",
+		"README.md":                    "8ccac41cb2e4183cbca315aeb11f4becf47fa69a5832619d23dfe747a2e2652e",
 		"SECURITY.md":                  "275f4f6e2e850093ca7cd9ee87064d772384a4579f4844b336b4d3de0d6a2e7d",
-		"deploy/synology/.env.example": "3ee6debc3bf6cc0cc1e2d28c802b51a8152a06f15980356b591bef0a96862852",
-		"docs/configuration.md":        "7e13d83a40e41650e76d282a08c46f0488bc8c968dac197029c0693a00e0d1c8",
-		"docs/protocol-evidence.md":    "983cc39d313bef76b49a6440bc7607767a4008c281deaa9a743b63d5e9172ff1",
+		"deploy/synology/.env.example": "9f864d439c23f9c36016c1e9410331639f0682f5838279a654ef808e8106c00c",
+		"docs/configuration.md":        "01e7dc9d9c9f9a820cee796a70e20b039eec4a631507c0ca5dc010d7bd2630da",
+		"docs/protocol-evidence.md":    "780f180c52bff62ad4f78e0c9045f9a319af2dc36f0ea7531539643ae1b75f95",
 		"docs/synology.md":             "2d91d86ea1541ff617e5e9793d0042ada733ce6b416ed4b7147710a462b53788",
 	}
 	for path, want := range expected {

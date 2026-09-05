@@ -32,49 +32,56 @@ type Poller interface {
 
 // Options supplies test seams. Zero values select production implementations.
 type Options struct {
-	Poller      Poller
-	Controller  Controller
-	Resolver    Resolver
-	Monitor     *health.Monitor
-	Logger      *slog.Logger
-	Network     NetworkIdentity
-	Now         func() time.Time
-	SaveState   func(string, state.State) error
-	SaveReceipt func(string, state.Receipt) error
+	Poller              Poller
+	Controller          Controller
+	Resolver            Resolver
+	Monitor             *health.Monitor
+	Logger              *slog.Logger
+	Network             NetworkIdentity
+	Now                 func() time.Time
+	SaveState           func(string, state.State) error
+	SaveReceipt         func(string, state.Receipt) error
+	SaveFirmwareReceipt func(string, state.FirmwareReceipt) error
 }
 
 // Gateway is safe for concurrent health, poll, and inform activity.
 type Gateway struct {
-	configuration    config.Config
-	poller           Poller
-	controller       Controller
-	encoder          *inform.Encoder
-	monitor          *health.Monitor
-	logger           *slog.Logger
-	network          NetworkIdentity
-	now              func() time.Time
-	saveState        func(string, state.State) error
-	started          time.Time
-	mac              [6]byte
-	informMu         sync.Mutex
-	gcmReplay        gcmReplayWindow
-	saveReceipt      func(string, state.Receipt) error
-	receipt          state.Receipt
-	receiptEpoch     string
-	receiptBlocked   bool
-	receiptLastWrite time.Time
+	configuration       config.Config
+	poller              Poller
+	controller          Controller
+	encoder             *inform.Encoder
+	monitor             *health.Monitor
+	logger              *slog.Logger
+	network             NetworkIdentity
+	now                 func() time.Time
+	saveState           func(string, state.State) error
+	started             time.Time
+	mac                 [6]byte
+	informMu            sync.Mutex
+	gcmReplay           gcmReplayWindow
+	saveReceipt         func(string, state.Receipt) error
+	receipt             state.Receipt
+	receiptEpoch        string
+	receiptBlocked      bool
+	receiptLastWrite    time.Time
+	firmwareReceipt     state.FirmwareReceipt
+	firmwareEpoch       string
+	firmwareBlocked     bool
+	firmwareLastWrite   time.Time
+	saveFirmwareReceipt func(string, state.FirmwareReceipt) error
 
 	mu         sync.RWMutex
 	persistent state.State
 	// reportedCfgVersion is a report-only compatibility marker. It starts from
 	// persistent adoption state but is never copied back into state.State.
 	// Explicit configuration receipts have their own independent cache.
-	reportedCfgVersion string
-	latest             nut.Snapshot
-	haveLatest         bool
-	upstreamOK         bool
-	lastInform         time.Time
-	nextDiscovery      uint32
+	reportedCfgVersion      string
+	reportedFirmwareVersion string
+	latest                  nut.Snapshot
+	haveLatest              bool
+	upstreamOK              bool
+	lastInform              time.Time
+	nextDiscovery           uint32
 }
 
 // ErrControllerResponseReplay is returned after a valid GCM envelope reuses a
@@ -249,6 +256,9 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 	if options.SaveReceipt == nil {
 		options.SaveReceipt = state.SaveReceipt
 	}
+	if options.SaveFirmwareReceipt == nil {
+		options.SaveFirmwareReceipt = state.SaveFirmwareReceipt
+	}
 	if options.Resolver == nil {
 		options.Resolver = net.DefaultResolver
 	}
@@ -316,25 +326,27 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		return nil, err
 	}
 	gateway := &Gateway{
-		configuration:      configuration,
-		poller:             poller,
-		controller:         controller,
-		encoder:            encoder,
-		monitor:            options.Monitor,
-		logger:             options.Logger,
-		network:            network,
-		now:                options.Now,
-		saveState:          options.SaveState,
-		saveReceipt:        options.SaveReceipt,
-		started:            options.Now().UTC(),
-		mac:                mac,
-		persistent:         persistent,
-		reportedCfgVersion: persistent.Adoption.CfgVersion,
-		gcmReplay:          gcmReplay,
-		nextDiscovery:      1,
+		configuration:       configuration,
+		poller:              poller,
+		controller:          controller,
+		encoder:             encoder,
+		monitor:             options.Monitor,
+		logger:              options.Logger,
+		network:             network,
+		now:                 options.Now,
+		saveState:           options.SaveState,
+		saveReceipt:         options.SaveReceipt,
+		saveFirmwareReceipt: options.SaveFirmwareReceipt,
+		started:             options.Now().UTC(),
+		mac:                 mac,
+		persistent:          persistent,
+		reportedCfgVersion:  persistent.Adoption.CfgVersion,
+		gcmReplay:           gcmReplay,
+		nextDiscovery:       1,
 	}
 	gateway.monitor.SetAdopted(persistent.Adoption.Adopted)
 	gateway.initializeReceipt()
+	gateway.initializeFirmwareReceipt()
 	return gateway, nil
 }
 
@@ -378,6 +390,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	upstreamOK := g.upstreamOK
 	persistent := g.persistent
 	reportedCfgVersion := g.reportedCfgVersion
+	reportedFirmwareVersion := g.reportedFirmwareVersion
 	lastInform := g.lastInform
 	g.mu.RUnlock()
 	now := g.now().UTC()
@@ -392,6 +405,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	reportState := persistent
 	reportState.Adoption.CfgVersion = reportedCfgVersion
 	report := projectPowerDevice(g.configuration, reportState, g.network, g.mac, observation, now, g.started, lastInform)
+	report.ReportedFirmwareVersion = reportedFirmwareVersion
 	payload, err := inform.BuildPowerDevicePayload(report)
 	if err != nil {
 		return inform.Outcome{}, err
@@ -433,7 +447,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 		if !ok {
 			return inform.Outcome{}, errors.New("gateway authenticated controller response omitted its nonce")
 		}
-		if nextReplay.contains(nonce) || g.receipt.Contains(nonce) {
+		if nextReplay.contains(nonce) || g.receipt.Contains(nonce) || g.firmwareReceipt.Contains(nonce) {
 			return inform.Outcome{}, ErrControllerResponseReplay
 		}
 		acceptedNonce = nonce
@@ -441,6 +455,21 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	}
 	currentAdoption := adoptionFromState(persistent)
 	receiptEligible := g.receiptsEligible(persistent, mode)
+	firmwareEligible := receiptEligible && g.configuration.UniFi.ReportedFirmwareSync
+	if firmwareEligible {
+		if target, err := inform.ClassifyFirmwareTarget(decoded.Payload); err == nil {
+			if err := g.acceptFirmwareTarget(target, acceptedNonce, now); err != nil {
+				return inform.Outcome{}, err
+			}
+			g.gcmReplay = nextReplay.withAccepted(acceptedNonce, false)
+			g.mu.Lock()
+			g.lastInform = now
+			g.mu.Unlock()
+			informResult = health.InformSuccess
+			// Target text is acknowledged, not installed. No restart/upgrade outcome.
+			return inform.Outcome{Kind: inform.ResponseReportedFirmware}, nil
+		}
+	}
 	if receiptEligible {
 		candidate, err := inform.ClassifyConfigReceipt(decoded.Payload)
 		if err == nil {
@@ -463,6 +492,10 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	if receiptEligible && outcome.Kind == inform.ResponseSetParam {
 		g.monitor.RecordConfigReceipt(health.ReceiptRejected)
 		return inform.Outcome{}, errors.New("controller configuration receipt rejected")
+	}
+	if firmwareEligible && outcome.Kind == inform.ResponseUpgrade {
+		g.monitor.RecordFirmwareReceipt(health.ReceiptRejected)
+		return inform.Outcome{}, errors.New("controller reported firmware target rejected")
 	}
 	volatileCfgVersion, hasVolatileCfgVersion := confineAdoptedPlainHTTPResponse(
 		currentAdoption,
@@ -527,6 +560,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 		// Every durable transition reanchors the report-only marker, including
 		// auth-key/mode epoch changes and trusted HTTPS cfgversion changes.
 		g.reportedCfgVersion = nextPersistent.Adoption.CfgVersion
+		g.reportedFirmwareVersion = ""
 	} else if hasVolatileCfgVersion {
 		g.reportedCfgVersion = volatileCfgVersion
 	}
@@ -535,6 +569,7 @@ func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
 	g.gcmReplay = nextReplay
 	if adoptionChanged {
 		g.resetReceiptContext(nextPersistent)
+		g.resetFirmwareContext(nextPersistent)
 	}
 	informResult = health.InformSuccess
 	g.monitor.SetAdopted(nextPersistent.Adoption.Adopted)
@@ -716,6 +751,7 @@ func (g *Gateway) discoveryAnnouncement(version discovery.Version, command uint8
 		return discovery.Announcement{}, errors.New("discovery sequence exhausted")
 	}
 	sequence := g.nextDiscovery
+	reportedFirmwareVersion := g.reportedFirmwareVersion
 	g.nextDiscovery++
 	g.mu.Unlock()
 	hardwareAddress := append(net.HardwareAddr(nil), g.mac[:]...)
@@ -730,18 +766,32 @@ func (g *Gateway) discoveryAnnouncement(version discovery.Version, command uint8
 	isDefault := !persistent.Adoption.Adopted
 	hashID, anonID := deriveDiscoveryIDs(persistent.Identity.GUID, g.mac, g.configuration.UniFi.Model)
 	identityIP := net.ParseIP(g.network.DeviceIP).To4()
+	var announcement discovery.Announcement
 	if g.configuration.UniFi.Model == inform.ModelUPS2UProEU {
-		return discovery.NewUSPDA2CAnnouncement(discovery.USPDA2CIdentity{
+		announcement, err = discovery.NewUSPDA2CAnnouncement(discovery.USPDA2CIdentity{
+			MAC: hardwareAddress, IP: identityIP, Hostname: g.configuration.Device.Hostname,
+			Uptime: uptimeSeconds, Sequence: sequence, IsDefault: isDefault,
+			HashID: hashID, AnonID: anonID,
+		})
+	} else {
+		announcement, err = discovery.NewUSWDA26Announcement(discovery.USWDA26Identity{
 			MAC: hardwareAddress, IP: identityIP, Hostname: g.configuration.Device.Hostname,
 			Uptime: uptimeSeconds, Sequence: sequence, IsDefault: isDefault,
 			HashID: hashID, AnonID: anonID,
 		})
 	}
-	return discovery.NewUSWDA26Announcement(discovery.USWDA26Identity{
-		MAC: hardwareAddress, IP: identityIP, Hostname: g.configuration.Device.Hostname,
-		Uptime: uptimeSeconds, Sequence: sequence, IsDefault: isDefault,
-		HashID: hashID, AnonID: anonID,
-	})
+	if err != nil {
+		return discovery.Announcement{}, err
+	}
+	if reportedFirmwareVersion != "" {
+		announcement.VersionText = reportedFirmwareVersion
+		// Pro uses a short version in both TLVs; UPS26's long embedded build
+		// remains source provenance rather than an invented firmware build.
+		if g.configuration.UniFi.Model == inform.ModelUPS2UProEU {
+			announcement.Firmware = reportedFirmwareVersion
+		}
+	}
+	return announcement, nil
 }
 
 func deriveDiscoveryIDs(guid string, mac [6]byte, profile string) ([8]byte, [16]byte) {

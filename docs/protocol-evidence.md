@@ -94,6 +94,25 @@ and an empty blocked-client string; all other top-level fields remain rejected.
 Both captured replies passed the revised parser offline. This proves syntax
 compatibility with that capture, not live Network convergence.
 
+### Controller-selected firmware target evidence
+
+Official Network 10.2.97 bytecode constructs upgrade replies with `_type`,
+`version`, and `url`; a supporting reply builder can add `md5sum` and `sha256sum`.
+This is **PROVEN** syntax evidence for that older controller build, not a capture
+of the current controller's upgrade body. Network 10.6.102 logs showed repeated
+scheduled upgrades to `1.6.4.432`; the exact rejected nightly response was not
+captured. The user also reports that changing channels can request a downgrade
+through the same upgrade flow.
+
+The separate default-off reported-firmware mirror accepts a strict bounded
+target envelope and discards its inert URL, checksum and optional timestamp
+metadata. Tests prove lower targets, private atomic persistence, restart replay
+bounds, no fetch/install/reboot, and version-only payload changes for both
+carriers. Source firmware profiles remain unchanged. Live controller convergence
+and channel switching remain **CANDIDATE**; see
+[Configuration](configuration.md#controller-selected-reported-firmware) for the
+trust and rollback limitations.
+
 ## Genuine firmware protocol inventory
 
 | Direction | Endpoint | Purpose | Evidence | Gateway v1 |

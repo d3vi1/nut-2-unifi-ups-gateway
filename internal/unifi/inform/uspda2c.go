@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/unifi/firmware"
 )
 
 const (
@@ -168,20 +170,22 @@ func specForProfile(profile DeviceProfile) (profileSpec, error) {
 // OutletTopologySource distinguishes exact firmware reference data, the
 // runtime's conservative carrier fallback, and a NUT observation.
 type PowerDeviceReport struct {
-	Profile              DeviceProfile
-	OutletTopologySource OutletTopologySource
-	Identity             DeviceIdentity
-	Adoption             AdoptionState
-	ObservedAt           time.Time
-	Uptime               time.Duration
-	LastInformAt         time.Time
-	Capabilities         Capabilities
-	System               SystemStats
-	VBMS                 VBMSTelemetry
-	Interface            InterfaceTelemetry
-	Outlets              []OutletTelemetry
-	BeepEnabled          *bool
-	NUTServer            *NUTServerAdvertisement
+	// ReportedFirmwareVersion overrides only version text, never profile semantics.
+	ReportedFirmwareVersion string
+	Profile                 DeviceProfile
+	OutletTopologySource    OutletTopologySource
+	Identity                DeviceIdentity
+	Adoption                AdoptionState
+	ObservedAt              time.Time
+	Uptime                  time.Duration
+	LastInformAt            time.Time
+	Capabilities            Capabilities
+	System                  SystemStats
+	VBMS                    VBMSTelemetry
+	Interface               InterfaceTelemetry
+	Outlets                 []OutletTelemetry
+	BeepEnabled             *bool
+	NUTServer               *NUTServerAdvertisement
 }
 
 func (r PowerDeviceReport) String() string {
@@ -418,6 +422,9 @@ func BuildPowerDevicePayload(r PowerDeviceReport) ([]byte, error) {
 	if err := validatePowerDeviceReport(r, spec); err != nil {
 		return nil, err
 	}
+	if r.ReportedFirmwareVersion != "" && !firmware.ValidVersion(r.ReportedFirmwareVersion) {
+		return nil, errors.New("inform: invalid reported firmware version")
+	}
 	capabilities := resolveCapabilities(r.Capabilities, spec)
 	requiredVersion := r.Identity.RequiredVersion
 	if requiredVersion == "" {
@@ -494,6 +501,9 @@ func BuildPowerDevicePayload(r PowerDeviceReport) ([]byte, error) {
 		}},
 		PortTable:   []wirePort{{IsUplink: true, FullDuplex: true, Media: "FE", PortIndex: 1, Up: r.Interface.Up}},
 		BeepEnabled: r.BeepEnabled,
+	}
+	if r.ReportedFirmwareVersion != "" {
+		p.Version = r.ReportedFirmwareVersion
 	}
 	if r.NUTServer != nil {
 		p.NUTServer = &wireNUTServer{

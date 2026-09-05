@@ -74,6 +74,7 @@ const (
 	ResponseFactoryReset
 	ResponseReboot
 	ResponseUpgrade
+	ResponseReportedFirmware
 	ResponseRelayControl
 	ResponseIgnoredCommand
 )

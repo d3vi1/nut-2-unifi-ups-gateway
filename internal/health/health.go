@@ -28,6 +28,7 @@ type Monitor struct {
 	informOK                  bool
 	adopted                   bool
 	receiptStatus             ReceiptStatus
+	firmwareReceiptStatus     ReceiptStatus
 	ignoredControllerSettings int
 
 	pollsTotal         atomic.Uint64
@@ -71,6 +72,12 @@ func (s ReceiptStatus) String() string {
 func (m *Monitor) RecordConfigReceipt(status ReceiptStatus) {
 	m.mu.Lock()
 	m.receiptStatus = status
+	m.mu.Unlock()
+}
+
+func (m *Monitor) RecordFirmwareReceipt(status ReceiptStatus) {
+	m.mu.Lock()
+	m.firmwareReceiptStatus = status
 	m.mu.Unlock()
 }
 func (m *Monitor) SetIgnoredControllerSettings(count int) {
@@ -136,6 +143,7 @@ func (m *Monitor) SetAdopted(v bool) {
 }
 
 type snapshot struct {
+	FirmwareReceipt           string `json:"reported_firmware_receipt"`
 	ConfigReceipt             string `json:"configuration_receipt"`
 	IgnoredControllerSettings int    `json:"ignored_controller_setting_categories"`
 	Status                    string `json:"status"`
@@ -149,6 +157,7 @@ func (m *Monitor) Snapshot(now time.Time) (snapshot, bool) {
 	m.mu.RLock()
 	fresh := m.upstreamOK && !m.upstreamAt.IsZero() && now.Sub(m.upstreamAt) <= m.staleAfter
 	s := snapshot{
+		FirmwareReceipt:           m.firmwareReceiptStatus.String(),
 		ConfigReceipt:             m.receiptStatus.String(),
 		IgnoredControllerSettings: m.ignoredControllerSettings,
 		Status:                    "not_ready",
@@ -204,6 +213,10 @@ func (m *Monitor) Handler() http.Handler {
 		fmt.Fprintln(w, "# TYPE n2u_config_receipt_status gauge")
 		for _, status := range []ReceiptStatus{ReceiptDisabled, ReceiptPending, ReceiptReceived, ReceiptStored, ReceiptRejected, ReceiptStorageError, ReceiptRateLimited} {
 			fmt.Fprintf(w, "n2u_config_receipt_status{status=%q} %s\n", status.String(), boolNumber(status.String() == s.ConfigReceipt))
+		}
+		fmt.Fprintln(w, "# TYPE n2u_reported_firmware_receipt_status gauge")
+		for _, status := range []ReceiptStatus{ReceiptDisabled, ReceiptPending, ReceiptStored, ReceiptRejected, ReceiptStorageError, ReceiptRateLimited} {
+			fmt.Fprintf(w, "n2u_reported_firmware_receipt_status{status=%q} %s\n", status.String(), boolNumber(status.String() == s.FirmwareReceipt))
 		}
 	})
 	return mux

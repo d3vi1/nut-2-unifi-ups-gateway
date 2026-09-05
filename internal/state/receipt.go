@@ -113,27 +113,40 @@ func privateReceiptInfo(info os.FileInfo) bool {
 // LoadReceipt returns os.ErrNotExist for an absent cache. Other read errors are
 // deliberately identity-free. A caller must separately compare its epoch.
 func LoadReceipt(path string) (Receipt, error) {
+	b, err := readPrivateReceipt(path)
+	if err != nil {
+		return Receipt{}, err
+	}
+	return decodeReceipt(b, "cfgversion")
+}
+
+func readPrivateReceipt(path string) ([]byte, error) {
 	bad := errors.New("cannot read private configuration receipt")
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Receipt{}, os.ErrNotExist
+		return nil, os.ErrNotExist
 	}
 	if err != nil || !privateReceiptInfo(info) || info.Size() < 1 || info.Size() > maxReceiptBytes {
-		return Receipt{}, bad
+		return nil, bad
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return Receipt{}, bad
+		return nil, bad
 	}
 	defer f.Close()
 	opened, err := f.Stat()
 	if err != nil || !privateReceiptInfo(opened) || !os.SameFile(info, opened) {
-		return Receipt{}, bad
+		return nil, bad
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
 	if err != nil || len(b) > maxReceiptBytes {
-		return Receipt{}, bad
+		return nil, bad
 	}
+	return b, nil
+}
+
+func decodeReceipt(b []byte, markerField string) (Receipt, error) {
+	bad := errors.New("cannot decode private report receipt")
 	// Decode exact field names and reject duplicates in one bounded pass. Go's
 	// usual struct decoder accepts case aliases and duplicate last-wins values.
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -155,7 +168,7 @@ func LoadReceipt(path string) (Receipt, error) {
 			err = dec.Decode(&r.Schema)
 		case "epoch":
 			err = dec.Decode(&r.Epoch)
-		case "cfgversion":
+		case markerField:
 			err = dec.Decode(&r.CfgVersion)
 		case "nonces":
 			err = dec.Decode(&r.Nonces)
@@ -186,11 +199,16 @@ func saveReceipt(path string, r Receipt, checkpoint func(string) error) error {
 	if err := r.Validate(); err != nil {
 		return bad
 	}
+	return savePrivateReceipt(path, r, checkpoint)
+}
+
+func savePrivateReceipt(path string, value any, checkpoint func(string) error) error {
+	bad := errors.New("cannot commit private report receipt")
 	info, err := os.Lstat(path)
 	if err == nil && !privateReceiptInfo(info) || err != nil && !errors.Is(err, os.ErrNotExist) {
 		return bad
 	}
-	b, err := json.Marshal(r)
+	b, err := json.Marshal(value)
 	if err != nil || len(b)+1 > maxReceiptBytes {
 		return bad
 	}

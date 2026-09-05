@@ -18,7 +18,7 @@ const (
 	maxReleaseAssetSize   = 128 << 20
 	maxExpandedBundleSize = 4 << 20
 	maxBundleMemberSize   = 1 << 20
-	composeSHA256         = "355434062a389e9c6440b34e5bcd0c04c8a70ff2bf304b33afc6ea3778e0447a"
+	composeSHA256         = "8c5f4850483067d23e60d802da3910ca2ceeb769b6f4007322802b4e67ad88e7"
 	composeAuthSHA256     = "dff79bb144fc83589d3c4eb0d7a3b73ef25051db9db59ff71273cd606e6f7cfd"
 )
 
@@ -239,6 +239,10 @@ N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC=false
 # Requires the volatile option above to stay false. Trusted management LAN only.
 # CANDIDATE until live acceptance; received settings are not applied.
 N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE=off
+# Optional reported-version mirroring, including lower controller-selected targets.
+# Requires persistent configuration receipts; no firmware is downloaded/installed.
+# CANDIDATE until exact-controller acceptance; trusted management LAN only.
+N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC=false
 # Experimental: leave false unless a separate, credential-free NUT service was
 # verified from another LAN host at the emulated device IP, served ID, and port.
 N2U_UNIFI_NUT_SERVER_ENABLED=false

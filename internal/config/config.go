@@ -49,6 +49,7 @@ type UniFi struct {
 	DiscoveryInterval          time.Duration
 	VolatileHTTPCfgVersionSync bool
 	ConfigReceiptMode          string
+	ReportedFirmwareSync       bool
 	NUTServer                  NUTServerAdvertisement
 }
 
@@ -138,6 +139,9 @@ func Load() (Config, error) {
 	if c.UniFi.VolatileHTTPCfgVersionSync, err = boolean("N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC", false); err != nil {
 		return Config{}, err
 	}
+	if c.UniFi.ReportedFirmwareSync, err = boolean("N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC", false); err != nil {
+		return Config{}, err
+	}
 	if c.UniFi.NUTServer.Port, err = integer("N2U_UNIFI_NUT_SERVER_PORT", 3493, 1, 65535); err != nil {
 		return Config{}, err
 	}
@@ -151,6 +155,12 @@ func Load() (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.UniFi.ReportedFirmwareSync && c.UniFi.ConfigReceiptMode != "persistent" {
+		return errors.New("reported firmware synchronization requires persistent configuration receipts")
+	}
+	if c.UniFi.ReportedFirmwareSync && filepath.Base(c.Runtime.StateFile) == "controller-firmware.json" {
+		return errors.New("reported firmware receipt must not overwrite adoption state")
+	}
 	switch c.UniFi.ConfigReceiptMode {
 	case "", "off", "memory", "persistent":
 	default:
@@ -341,7 +351,8 @@ var knownEnvironment = map[string]struct{}{
 	"N2U_NUT_PASSWORD": {}, "N2U_NUT_PASSWORD_FILE": {}, "N2U_NUT_TIMEOUT": {},
 	"N2U_NUT_ALLOW_INSECURE_REMOTE": {},
 	"N2U_UNIFI_MODEL":               {}, "N2U_UNIFI_VERSION": {}, "N2U_INFORM_URL": {},
-	"N2U_UNIFI_NUT_SERVER_ENABLED": {}, "N2U_UNIFI_NUT_SERVER_ID": {}, "N2U_UNIFI_NUT_SERVER_PORT": {},
+	"N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC": {},
+	"N2U_UNIFI_NUT_SERVER_ENABLED":              {}, "N2U_UNIFI_NUT_SERVER_ID": {}, "N2U_UNIFI_NUT_SERVER_PORT": {},
 	"N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC": {},
 	"N2U_INFORM_INTERVAL":                         {}, "N2U_INFORM_TIMEOUT": {}, "N2U_DISCOVERY_INTERVAL": {},
 	"N2U_DEVICE_MAC": {}, "N2U_DEVICE_SERIAL": {}, "N2U_DEVICE_HOSTNAME": {}, "N2U_DEVICE_IP": {},

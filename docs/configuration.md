@@ -166,6 +166,52 @@ with the same named state volume. The old binary reads its original adoption
 state and does not use the separate receipt. Do not retain new environment
 variables in an older deployment: unknown `N2U_` variables are rejected.
 
+### Controller-selected reported firmware
+
+`N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC=false` is a separate default-off
+compatibility experiment. Set it to `true` only with configuration receipt mode
+`persistent`, on a trusted management LAN. It mirrors the version selected by an
+authenticated, adopted, non-default-key HTTP/GCM controller `upgrade` response.
+Targets may increase **or decrease**, for example when changing release channels.
+No version ordering or invented maximum is used. Versions must have three or four
+canonical decimal components; unknown formats fail closed.
+
+This changes **reported compatibility text**, not installed software. The real
+gateway release, source protocol profile, hardware identity, outlet/capability
+masks and minimum required version remain unchanged. Inform `version` and the
+short discovery version change together at the committed-state boundary. UPS26's
+long embedded firmware build remains source provenance; the Pro carrier's two
+short version fields both mirror the target. An in-flight packet built before a
+transition can still finish with its previous snapshot.
+
+Only exact `upgrade` fields `version`, optional `url`, `md5sum`, `sha256sum`, and
+`server_time_in_utc` are accepted. Companion fields are bounded, type-checked and
+discarded, not retained or logged. URLs are never parsed, resolved or fetched;
+checksum text is not artifact verification, and server time is not freshness.
+There is no firmware install, reboot, command, cadence or NUT-write action.
+
+The independent `controller-firmware.json` beside `N2U_STATE_FILE` is private
+(0600), bounded to 16 KiB and atomically committed before publication. It contains
+only a schema, opaque authority/source-profile binding, target version and at most
+128 transition nonces. Same-target replies do not write. New targets write at most
+once per 30 seconds per process. Failed storage blocks further firmware changes
+until repair and restart; configuration-receipt storage failure also blocks this
+dependent feature. The two markers do not erase each other on normal transitions.
+Identity, key, origin, GCM mode or source-profile changes invalidate the target.
+
+`reported_firmware_receipt` in `/readyz` and
+`n2u_reported_firmware_receipt_status` expose fixed status values, never the target
+or companion metadata. Keep one state directory per instance. Disabling the flag
+uses the source version and leaves the cache untouched; re-enabling can restore
+that cache. Rollback preserves adoption state and leaves this separate file unused.
+
+This feature materially influences Network's upgrade/configuration/UI decisions.
+Authenticated GCM does not prove ordering: unseen, evicted, same-target responses
+forgotten after restart, or restored old volumes can regress the reported target.
+A legitimate A-to-B-to-A transition is allowed. Same-version channel changes have
+no separate channel meaning. Interoperability remains **CANDIDATE** until exact
+controller upgrade/downgrade, discovery, Online, rename, pairing and restart tests.
+
 ### Optional NUT Server advertisement
 
 UniFi's **NUT Server** setting describes a downstream NUT service reachable at

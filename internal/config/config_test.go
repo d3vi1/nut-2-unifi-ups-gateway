@@ -31,8 +31,41 @@ func TestLoadDefaults(t *testing.T) {
 	if c.UniFi.ConfigReceiptMode != "off" || c.UniFi.ConfigReceiptsEnabled() {
 		t.Fatal("configuration receipts must default off")
 	}
+	if c.UniFi.ReportedFirmwareSync {
+		t.Fatal("reported firmware synchronization must default off")
+	}
 	if c.Runtime.HealthAddress != "127.0.0.1:9199" {
 		t.Fatalf("unexpected health default %q", c.Runtime.HealthAddress)
+	}
+}
+
+func TestReportedFirmwareRequiresExplicitPersistentOptIn(t *testing.T) {
+	for _, mode := range []string{"off", "memory", "persistent"} {
+		t.Run(mode, func(t *testing.T) {
+			clearEnvironment(t)
+			t.Setenv("N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE", mode)
+			t.Setenv("N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC", "true")
+			c, err := Load()
+			if (mode == "persistent") != (err == nil) {
+				t.Fatal("unexpected firmware policy validation")
+			}
+			if err == nil && !c.UniFi.ReportedFirmwareSync {
+				t.Fatal("opt-in lost")
+			}
+		})
+	}
+	clearEnvironment(t)
+	t.Setenv("N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE", "persistent")
+	t.Setenv("N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC", "sometimes")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid boolean accepted")
+	}
+	t.Setenv("N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC", "true")
+	for _, path := range []string{"controller-firmware.json", "/var/lib/n2u/controller-firmware.json", "/var/lib/n2u/controller-receipt.json"} {
+		t.Setenv("N2U_STATE_FILE", path)
+		if _, err := Load(); err == nil {
+			t.Fatal("receipt/adoption collision accepted")
+		}
 	}
 }
 
