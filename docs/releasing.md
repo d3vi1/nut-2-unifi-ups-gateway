@@ -41,8 +41,11 @@ the release controller:
    `GITHUB_TOKEN` permission read-only.
 5. Store a repository-scoped, read-only fine-grained token as
    `N2U_RELEASE_POLICY_TOKEN`. It needs Administration read and Contents read
-   access so the controller can verify policy and inspect its private draft;
-   it must have no write permission.
+   access so the controller can verify policy; it must have no write permission.
+   GitHub does not expose private drafts to this read-only credential. Draft
+   listing, inspection and mutation use the ephemeral `GITHUB_TOKEN` only in
+   the reservation, binding and finalization jobs, which already need
+   `contents: write`. Never widen the PAT to work around draft visibility.
 6. Archive and remove every still-rerunnable historical tagged workflow that
    had package-write authority but predates this controller.
 7. Confirm the reviewed source is the live `main` tip and that the requested
@@ -56,6 +59,14 @@ tag, creates its owned draft, publishes a uniquely named permanent OCI
 retention anchor, binds its digest and attestation to the numeric reservation,
 uploads an exact asset set, and only then publishes the immutable Release. It
 never publishes a `:0.9.0` image alias.
+
+The read-only preflight checks policy, source and tag absence, not private-draft
+absence. The reservation job definitively checks draft absence with its writer
+token immediately before tag creation. The image job checks policy and the
+protected source tag before building, then verifies the image and attestation;
+it has no repository-write permission or private-draft access. If the draft is
+deleted or changed during the build, a run-specific image/attestation can remain,
+but the binding job rejects the changed numeric draft before any Release update.
 
 Never rerun all, failed, or individual jobs from a release run. Every release
 job requires attempt one and matching upstream outputs. If anything fails after
@@ -72,6 +83,28 @@ boundary atomic against another authorized writer. It serializes its own
 release runs, overwrites every expected mutable field during publication, and
 validates the exact response and immutable readback; an independently
 authorized concurrent writer remains part of the release trust boundary.
+
+### Explicit recovery of an unpublished empty reservation
+
+This is an operator-approved maintenance procedure, not a workflow retry or an
+automatic cleanup path. Never apply it to a published Release or a reservation
+with assets or an OCI publication. Preserve the failed run as an audit record.
+
+1. Fix and review the cause first. Obtain explicit owner approval to recover
+   the specific version, including draft/tag deletion. Freeze other writers.
+2. Record the failed run and attempt, numeric draft ID, exact reservation body,
+   source SHA, tag object and current tag ruleset. Re-read all of them immediately
+   before mutation. Require an unpublished, empty draft, an exact lightweight
+   source tag and no image under that run's OCI anchor.
+3. Delete only that numeric draft. Temporarily exclude only its exact tag ref
+   from the existing tag ruleset, delete only that tag, and restore the exact
+   original ruleset immediately, including on failure. Do not disable protection
+   globally, add a standing bypass or delete the failed run.
+4. Read back the restored policy and absence of both draft and tag. If any
+   result is ambiguous, stop and inspect; do not repeat a destructive call.
+5. Once the corrected exact `main` has passed all gates, dispatch a new run with
+   attempt one. Let it create the version afresh; never move or recreate the tag
+   by hand, reuse the old draft or resume the old workflow's outputs.
 
 ## Pinned toolchains
 

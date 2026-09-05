@@ -95,8 +95,11 @@ administer. Coordinate any live power-path test with the operator.
   create-ref response has been accepted.
 - The reservation marker binds a numeric Release ID to the repository ID,
   version tag, source SHA, run ID, first run attempt, permanent OCI anchor,
-  produced digest, and attestation. Every downstream mutation verifies that
-  identity and the exact expected asset set.
+  produced digest, and attestation. Every downstream Release mutation verifies
+  that identity and the exact expected asset set. The image job has no private-
+  draft access or repository-write permission: it may leave a run-scoped image
+  and attestation if the draft changes, but binding and Release publication
+  remain blocked until the exact reserved draft is verified.
 - A checksum-pinned GitHub CLI independently verifies the exact local
   attestation bundle against a review-pinned Sigstore Public Good root,
   Fulcio, CT and Rekor, with the exact workflow, source ref/SHA, signer SHA,

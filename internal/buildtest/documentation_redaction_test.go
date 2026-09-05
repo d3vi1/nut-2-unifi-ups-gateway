@@ -172,7 +172,7 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 	expected := map[string]string{
 		"CHANGELOG.md":                "d7ce7977b39f3a2dd33f1f85b67ef0ce9c29d41eea03b1d8be799d841a3927cc",
 		"README.md":                   "743dfbb318a35eab76ed3e177a488f61ef42d442d010bed60a657fae19b56751",
-		"SECURITY.md":                 "1fda6d124128ed92ebc4afd7b4402e2b40e32f11772730b5b6c4a4668d741878",
+		"SECURITY.md":                 "bc4743a0ffe7e7f09d2815c08051e12c2b30631983f7fe2aa78ac9d2f9a66982",
 		"deploy/compose/.env.example": "0739ab28e9a9659e064a89af1c121d8a8f30647d974b9805427437e863aff111",
 		"docs/configuration.md":       "a39c3e513394c442cc8dbb63f0397d475e968d24b44fdc150365efa603620b15",
 		"docs/protocol-evidence.md":   "cf20926b280ce8fd4280834a3e06a5e2c529347f2c9de9ca5efb4e8df5059b60",
@@ -180,7 +180,7 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 		"docs/installation.md":        "5c649964d14b55ef533cb1277f189c23d903d5860f723dea74c1a83b8d9ee111",
 		"docs/compatibility.md":       "17eaa40a14845163a475c075e9f0f04dbae7d039d8d8b7684c9e2594722ae45c",
 		"docs/troubleshooting.md":     "f60ff17228a0b6b411fa7bb2bd95af6226280f5c3d7f44b342e44f0631bd980e",
-		"docs/releasing.md":           "17b303ec840f0c943fd4bf357cd76c4f42073282ad4062e2590d5401648e7e3a",
+		"docs/releasing.md":           "a9b67bf2d90dbfb3f4d3f7394965046331950e5fa098c359317f56bc6a91041a",
 	}
 	for path, want := range expected {
 		document := readRepositoryFile(t, strings.Split(path, "/")...)
