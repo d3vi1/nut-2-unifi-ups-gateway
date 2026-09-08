@@ -16,7 +16,7 @@ import (
 
 const (
 	composeManagedSHA256        = "4502f9621f955182e28838e68dd278409b8b07cdd820848833f76ef2132849c2"
-	composeManagedNUTHostSHA256 = "e9c2b1f1cfd5709249bc6029969ee2b83a1c9f390831ee3287b92d057460a437"
+	composeManagedNUTHostSHA256 = "076dd6d0591074db64139cee9fe0e282ca2a50de2ab4fb4b4f27ac9cf4804178"
 	maxReleaseAssetSize         = 128 << 20
 	maxExpandedBundleSize       = 4 << 20
 	maxBundleMemberSize         = 1 << 20
@@ -243,6 +243,7 @@ N2U_DEVICE_MAC=
 # Optional compose.nut-host.yaml overlay: existing Docker bridge with --internal.
 # N2U_NUT_HOST_NETWORK=
 # N2U_NUT_HOST_IP=
+# N2U_NUT_HOST_GATEWAY=
 # Set the reachable server address and actual UPS name. For same-host NUT use
 # the internal bridge gateway address, never 127.0.0.1. Macvlan alone cannot
 # reach its host. NUT must already accept the reserved bridge-side source IP.

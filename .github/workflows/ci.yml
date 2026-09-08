@@ -80,6 +80,7 @@ jobs:
           N2U_NUT_ADDRESS: 172.30.90.1:3493
           N2U_NUT_HOST_NETWORK: n2u-test-host
           N2U_NUT_HOST_IP: 172.30.90.2
+          N2U_NUT_HOST_GATEWAY: 172.30.90.1
           N2U_INFORM_URL: http://192.0.2.1:8080/inform
         run: |
           docker compose --env-file /dev/null -f deploy/compose/compose.yaml config --quiet

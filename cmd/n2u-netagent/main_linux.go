@@ -25,7 +25,7 @@ func main() {
 	if mode == "" {
 		mode = "dhcp"
 	}
-	err := netagent.Run(ctx, netagent.Config{MAC: os.Getenv("N2U_NET_MAC"), Mode: mode, StaticCIDR: os.Getenv("N2U_NET_STATIC_CIDR"), Router: os.Getenv("N2U_NET_ROUTER")})
+	err := netagent.Run(ctx, netagent.Config{MAC: os.Getenv("N2U_NET_MAC"), Mode: mode, StaticCIDR: os.Getenv("N2U_NET_STATIC_CIDR"), Router: os.Getenv("N2U_NET_ROUTER"), AuxAddress: os.Getenv("N2U_NET_AUX_ADDRESS"), AuxRouter: os.Getenv("N2U_NET_AUX_ROUTER")})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "network agent stopped; network_configuration_failed")
 		os.Exit(1)

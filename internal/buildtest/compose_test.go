@@ -127,3 +127,21 @@ func TestManagedComposeConfinesPrivilegesAndSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestManagedAuxiliaryTupleIsExplicitAndHelperOnly(t *testing.T) {
+	overlay := readRepositoryFile(t, "deploy", "compose", "compose.managed-nut-host.yaml")
+	for _, required := range []string{
+		"  netagent:\n    environment:\n",
+		"N2U_NET_AUX_ADDRESS: ${N2U_NUT_HOST_IP:?",
+		"N2U_NET_AUX_ROUTER: ${N2U_NUT_HOST_GATEWAY:?",
+	} {
+		if !strings.Contains(overlay, required) {
+			t.Fatal("missing explicit auxiliary tuple boundary")
+		}
+	}
+	for _, forbidden := range []string{"  gateway:", "volumes:", "cap_add:", "N2U_NUT_ADDRESS:", "N2U_NUT_PASSWORD"} {
+		if strings.Contains(overlay, forbidden) {
+			t.Fatal("auxiliary overlay exceeds route-only boundary")
+		}
+	}
+}

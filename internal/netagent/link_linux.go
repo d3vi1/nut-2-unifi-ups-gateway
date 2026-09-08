@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"syscall"
 	"time"
 )
@@ -183,6 +184,10 @@ func bootstrapInterface(iface net.Interface) bool {
 }
 
 func requireMacvlan(selected net.Interface) error {
+	return requireLinkKind(selected, "macvlan")
+}
+
+func requireLinkKind(selected net.Interface, kind string) error {
 	// Verify macvlan via the kernel's link metadata, not an eth0 naming guess.
 	data, err := syscall.NetlinkRIB(syscall.RTM_GETLINK, syscall.AF_UNSPEC)
 	if err != nil {
@@ -193,7 +198,7 @@ func requireMacvlan(selected net.Interface) error {
 		return errors.New("invalid link metadata")
 	}
 	for _, m := range msgs {
-		if m.Header.Type != syscall.RTM_NEWLINK || len(m.Data) < 16 || int(int32(binary.NativeEndian.Uint32(m.Data[4:]))) != selected.Index {
+		if m.Header.Type != syscall.RTM_NEWLINK || len(m.Data) < 16 || int(int32(binary.NativeEndian.Uint32(m.Data[4:]))) != selected.Index || binary.NativeEndian.Uint16(m.Data[2:]) != 1 {
 			continue
 		}
 		attrs, err := syscall.ParseNetlinkRouteAttr(&m)
@@ -209,7 +214,7 @@ func requireMacvlan(selected net.Interface) error {
 					if n < 4 || n > len(nested) {
 						break
 					}
-					if typ == 1 && string(nested[4:n]) == "macvlan\x00" {
+					if typ == 1 && string(nested[4:n]) == kind+"\x00" {
 						return nil
 					}
 					next := (n + 3) &^ 3
@@ -221,7 +226,7 @@ func requireMacvlan(selected net.Interface) error {
 			}
 		}
 	}
-	return errors.New("managed interface must be macvlan")
+	return errors.New("unexpected managed interface kind")
 }
 
 // installMAC follows non-mutating preflight: guards pass before mutation.
@@ -273,13 +278,21 @@ func bootstrapAddresses(iface net.Interface) ([]*net.IPNet, error) {
 }
 
 func prepare(iface net.Interface, mac net.HardwareAddr) (net.Interface, error) {
+	return prepareWithAux(iface, mac, auxiliaryRoute{})
+}
+
+func prepareWithAux(iface net.Interface, mac net.HardwareAddr, aux auxiliaryRoute) (net.Interface, error) {
 	remove, err := bootstrapAddresses(iface)
 	if err != nil {
 		return net.Interface{}, err
 	}
 	recovery := iface.HardwareAddr.String() == mac.String()
-	if err := checkRoutes(iface.Index, false, recovery); err != nil {
+	beforeRoutes, err := inspectRoutes(iface.Index, recovery, aux)
+	if err != nil {
 		return net.Interface{}, err
+	}
+	if !aux.unchanged() {
+		return net.Interface{}, errors.New("auxiliary network changed")
 	}
 	actual, err := installMAC(iface, mac)
 	if err != nil {
@@ -296,7 +309,14 @@ func prepare(iface net.Interface, mac net.HardwareAddr) (net.Interface, error) {
 			return net.Interface{}, errors.New("bootstrap addresses changed during preparation")
 		}
 	}
-	if err := checkRoutes(actual.Index, true, recovery); err != nil {
+	afterRoutes, err := inspectRoutes(actual.Index, recovery, aux)
+	if err != nil {
+		return net.Interface{}, err
+	}
+	if !aux.unchanged() || !slices.Equal(beforeRoutes.snapshot, afterRoutes.snapshot) {
+		return net.Interface{}, errors.New("network routes changed during preparation")
+	}
+	if err := afterRoutes.apply(); err != nil {
 		return net.Interface{}, err
 	}
 	for _, n := range remove {
@@ -310,6 +330,9 @@ func prepare(iface net.Interface, mac net.HardwareAddr) (net.Interface, error) {
 	}
 	if err := checkRoutes(actual.Index, false, false); err != nil {
 		return net.Interface{}, err
+	}
+	if !aux.unchanged() {
+		return net.Interface{}, errors.New("auxiliary network changed")
 	}
 	return actual, nil
 }
@@ -342,23 +365,50 @@ func noOtherSubnetOverlap(index int, l Lease) error {
 }
 
 func checkRoutes(index int, cleanup, recovery bool) error {
+	p, err := inspectRoutes(index, recovery, auxiliaryRoute{})
+	if err != nil {
+		return err
+	}
+	if cleanup {
+		return p.apply()
+	}
+	return nil
+}
+
+type routePlan struct {
+	remove   [][]byte
+	snapshot []string
+}
+
+func (p routePlan) apply() error {
+	for _, route := range p.remove {
+		if err := rtnl(syscall.RTM_DELROUTE, 0, route); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func inspectRoutes(index int, recovery bool, aux auxiliaryRoute) (routePlan, error) {
+	var plan routePlan
 	data, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_INET)
 	if err != nil {
-		return errors.New("routes unavailable")
+		return plan, errors.New("routes unavailable")
 	}
 	msgs, err := syscall.ParseNetlinkMessage(data)
 	if err != nil {
-		return errors.New("invalid routes")
+		return plan, errors.New("invalid routes")
 	}
-	var remove [][]byte
+	auxCount := 0
 	for _, m := range msgs {
 		if m.Header.Type != syscall.RTM_NEWROUTE || len(m.Data) < 12 || m.Data[4] != syscall.RT_TABLE_MAIN {
 			continue
 		}
 		attrs, err := syscall.ParseNetlinkRouteAttr(&m)
 		if err != nil {
-			return errors.New("invalid route attributes")
+			return plan, errors.New("invalid route attributes")
 		}
+		plan.snapshot = append(plan.snapshot, string(m.Data))
 		dev := 0
 		for _, a := range attrs {
 			if a.Attr.Type == syscall.RTA_OIF && len(a.Value) == 4 {
@@ -366,6 +416,14 @@ func checkRoutes(index int, cleanup, recovery bool) error {
 			}
 		}
 		if m.Data[1] == 0 {
+			if aux.matches(m, attrs) {
+				auxCount++
+				if auxCount > 1 {
+					return plan, errors.New("ambiguous auxiliary defaults")
+				}
+				plan.remove = append(plan.remove, m.Data)
+				continue
+			}
 			metric := uint32(0)
 			for _, a := range attrs {
 				if a.Attr.Type == syscall.RTA_PRIORITY && len(a.Value) == 4 {
@@ -375,23 +433,17 @@ func checkRoutes(index int, cleanup, recovery bool) error {
 			// This metric is exclusively reserved for this agent in its private
 			// namespace. Recover only its previous exact route after a crash.
 			if recovery && dev == index && metric == 42760 && m.Data[5] == syscall.RTPROT_STATIC {
-				remove = append(remove, m.Data)
+				plan.remove = append(plan.remove, m.Data)
 				continue
 			}
-			return errors.New("managed namespace must have no existing default route")
+			return plan, errors.New("managed namespace must have no existing default route")
 		}
 		if dev == index && m.Data[5] != syscall.RTPROT_KERNEL {
-			return errors.New("refusing to change a routed LAN interface")
+			return plan, errors.New("refusing to change a routed LAN interface")
 		}
 	}
-	if cleanup {
-		for _, route := range remove {
-			if err := rtnl(syscall.RTM_DELROUTE, 0, route); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	slices.Sort(plan.snapshot)
+	return plan, nil
 }
 
 type packetSocket struct {

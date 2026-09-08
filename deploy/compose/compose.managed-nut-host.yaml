@@ -1,8 +1,12 @@
 # Optional overlay for compose.managed.yaml ONLY. This attaches the host-NUT
 # bridge to the namespace owner; the gateway shares that same namespace.
-# The existing bridge MUST be internal (no second default route).
+# The existing bridge MUST be internal. The explicit tuple permits cleanup of
+# the exact Docker-created default route on affected Engine 24 deployments.
 services:
   netagent:
+    environment:
+      N2U_NET_AUX_ADDRESS: ${N2U_NUT_HOST_IP:?set the reserved bridge-side NUT client IPv4 address}
+      N2U_NET_AUX_ROUTER: ${N2U_NUT_HOST_GATEWAY:?set the existing internal bridge gateway IPv4 address}
     networks:
       nut_host:
         ipv4_address: ${N2U_NUT_HOST_IP:?set the reserved bridge-side NUT client IPv4 address}

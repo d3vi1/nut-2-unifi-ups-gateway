@@ -32,9 +32,30 @@ func labLink(t *testing.T, name, kind string, parent int, mac net.HardwareAddr) 
 	if kind == "macvlan" {
 		info = append(info, attr(2|0x8000, attr(1, u32(4)))...)
 	}
+	if kind == "veth" {
+		clear(p[8:16])
+		peer := make([]byte, 16)
+		peer = append(peer, attr(syscall.IFLA_IFNAME, []byte("n2u-lab-peer\x00"))...)
+		info = append(info, attr(2|0x8000, attr(1|0x8000, peer))...)
+	}
 	p = append(p, attr(18|0x8000, info)...)
 	if err := rtnl(syscall.RTM_NEWLINK, syscall.NLM_F_CREATE|syscall.NLM_F_EXCL, p); err != nil {
 		t.Fatal(err)
+	}
+	if kind == "veth" {
+		for _, linkName := range []string{"n2u-lab-peer", name} {
+			link, err := net.InterfaceByName(linkName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			up := make([]byte, 16)
+			copy(up[4:], u32(uint32(link.Index)))
+			copy(up[8:], u32(syscall.IFF_UP))
+			copy(up[12:], u32(syscall.IFF_UP))
+			if err := rtnl(syscall.RTM_NEWLINK, 0, up); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	iface, err := net.InterfaceByName(name)
 	if err != nil {
@@ -119,7 +140,7 @@ func TestLinuxManagedNetworkLab(t *testing.T) {
 	if !bootstrapInterface(client) {
 		t.Fatal("failed MAC mutation removed bootstrap addressing")
 	}
-	host := labLink(t, "n2u-lab-nut", "bridge", 0, fixtureMAC)
+	host := labLink(t, "n2u-lab-nut", "veth", 0, fixtureMAC)
 	if err := address(host.Index, "172.31.253.2", 29, 3600, false); err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +155,42 @@ func TestLinuxManagedNetworkLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	host.HardwareAddr = hostMAC
+	aux, err := auxiliaryInterface(client.Index, "172.31.253.2", "172.31.253.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]string{{"172.31.253.2", "192.0.2.1"}, {"172.31.253.2", "172.31.253.2"}} {
+		if _, err := auxiliaryInterface(client.Index, pair[0], pair[1]); err == nil {
+			t.Fatal("unsafe auxiliary router accepted")
+		}
+	}
+	auxDefault := []byte{2, 0, 0, 0, 254, 3, 0, 1, 0, 0, 0, 0}
+	auxDefault = append(auxDefault, attr(syscall.RTA_TABLE, u32(254))...)
+	auxDefault = append(auxDefault, attr(syscall.RTA_GATEWAY, net.ParseIP("172.31.253.1").To4())...)
+	auxDefault = append(auxDefault, attr(syscall.RTA_OIF, u32(uint32(host.Index)))...)
+	if err := rtnl(syscall.RTM_NEWROUTE, syscall.NLM_F_CREATE|syscall.NLM_F_EXCL, auxDefault); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectRoutes(client.Index, false, auxiliaryRoute{}); err == nil {
+		t.Fatal("aux default allowed without opt-in")
+	}
+	if plan, err := inspectRoutes(client.Index, false, aux); err != nil || len(plan.remove) != 1 {
+		t.Fatal("explicit auxiliary route did not validate", err)
+	}
+	// Even a valid aux tuple must not permit partial cleanup when LAN address
+	// validation fails before the route is touched.
+	if err := address(client.Index, "203.0.113.30", 24, 3600, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareWithAux(client, fixtureMAC, aux); err == nil {
+		t.Fatal("unsafe LAN accepted with auxiliary route")
+	}
+	if plan, err := inspectRoutes(client.Index, false, aux); err != nil || len(plan.remove) != 1 {
+		t.Fatal("failed preflight changed auxiliary route")
+	}
+	if err := address(client.Index, "203.0.113.30", 24, 0, true); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var silent atomic.Bool
@@ -142,7 +199,9 @@ func TestLinuxManagedNetworkLab(t *testing.T) {
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- labDHCPServer(ctx, server, &silent, &renewals, &rebindings) }()
 	agentDone := make(chan error, 1)
-	go func() { agentDone <- Run(ctx, Config{MAC: fixtureMAC.String(), Mode: "dhcp"}) }()
+	go func() {
+		agentDone <- Run(ctx, Config{MAC: fixtureMAC.String(), Mode: "dhcp", AuxAddress: "172.31.253.2", AuxRouter: "172.31.253.1"})
+	}()
 	var first netconfig.Status
 	deadline := time.Now().Add(25 * time.Second)
 	for time.Now().Before(deadline) {

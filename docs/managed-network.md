@@ -107,9 +107,18 @@ static addressing through `.env`, or use a DHCP reservation in Network.
 Macvlan cannot directly reach its host's parent LAN address. The optional
 `compose.managed-nut-host.yaml` overlay attaches an **existing internal bridge**
 to `netagent`; the gateway can then reach the host NUT service through the bridge
-gateway IP. Set `N2U_NUT_HOST_NETWORK`, `N2U_NUT_HOST_IP`, and `N2U_NUT_ADDRESS`
+gateway IP. Set `N2U_NUT_HOST_NETWORK`, `N2U_NUT_HOST_IP`,
+`N2U_NUT_HOST_GATEWAY`, and `N2U_NUT_ADDRESS`
 explicitly. NUT must already listen there and permit that source. The helper
 never readdresses the bridge interface. Do not use `127.0.0.1` for host NUT.
+
+On the tested Engine 24 build, Docker still installs a default route through
+this internal bridge. The overlay explicitly supplies its client IP and gateway
+to the helper (`N2U_NET_AUX_ADDRESS` / `N2U_NET_AUX_ROUTER`). Only that exact
+Docker route shape on the uniquely matching veth endpoint may be removed after
+complete network validation. Other defaults remain fatal. The bridge MAC,
+address and connected route are preserved; no host route or firewall is edited.
+Do not omit the gateway value or infer it from the NUT server address.
 
 Recreate the two services together when changing networks or the helper's
 container identity. Compose startup ordering does not provide runtime health

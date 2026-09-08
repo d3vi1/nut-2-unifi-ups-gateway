@@ -23,6 +23,8 @@ type Config struct {
 	Mode       string
 	StaticCIDR string
 	Router     string
+	AuxAddress string
+	AuxRouter  string
 }
 
 func (c Config) validate() (net.HardwareAddr, Lease, error) {
@@ -215,7 +217,11 @@ func Run(ctx context.Context, c Config) error {
 	if err != nil || fresh.Index != iface.Index || fresh.HardwareAddr.String() != iface.HardwareAddr.String() {
 		return errors.New("managed interface changed before preparation")
 	}
-	iface, err = prepare(fresh, mac)
+	aux, err := auxiliaryInterface(fresh.Index, c.AuxAddress, c.AuxRouter)
+	if err != nil {
+		return err
+	}
+	iface, err = prepareWithAux(fresh, mac, aux)
 	if err != nil {
 		return err
 	}
