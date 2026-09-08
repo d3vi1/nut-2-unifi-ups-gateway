@@ -229,8 +229,9 @@ func TestLinuxManagedNetworkLab(t *testing.T) {
 	if err != nil || hostAfter.HardwareAddr.String() != host.HardwareAddr.String() {
 		t.Fatal("managed setup changed the host-NUT bridge identity")
 	}
-	hostAddrs, err := hostAfter.Addrs()
-	if err != nil || len(hostAddrs) != 1 || hostAddrs[0].String() != "172.31.253.2/29" {
+	// A veth may gain a kernel-generated IPv6 link-local address on hosts
+	// with IPv6 enabled. Use the actual auxiliary invariant, not total count.
+	if !aux.unchanged() {
 		t.Fatal("managed setup changed the host-NUT bridge address")
 	}
 	t.Log("synthetic DHCP acquired; checking renewal without generation change")
