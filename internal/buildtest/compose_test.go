@@ -1,0 +1,100 @@
+package buildtest
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestComposeKeepsLANIdentityExplicitAndSharedWithRuntime(t *testing.T) {
+	compose := readRepositoryFile(t, "deploy", "compose", "compose.yaml")
+	for _, option := range []string{"N2U_DEVICE_IP", "N2U_DEVICE_MAC"} {
+		if strings.Count(compose, "${"+option+":?") != 2 {
+			t.Errorf("%s must be required for both the LAN endpoint and the runtime", option)
+		}
+	}
+	for _, required := range []string{
+		"      N2U_NETWORK_MODE: separate\n",
+		"    networks:\n      lan:\n        ipv4_address: ${N2U_DEVICE_IP:?",
+		"        mac_address: ${N2U_DEVICE_MAC:?",
+		"      N2U_NUT_ADDRESS: ${N2U_NUT_ADDRESS:?",
+		"  lan:\n    external: true\n    name: ${N2U_LAN_NETWORK:?",
+		"name: nut-2-unifi-ups-gateway\n",
+		"      - state:/var/lib/n2u\n",
+		"      N2U_UNIFI_NUT_SERVER_ENABLED: ${N2U_UNIFI_NUT_SERVER_ENABLED:-false}",
+	} {
+		if !strings.Contains(compose, required) {
+			t.Errorf("base Compose is missing deployment boundary %q", required)
+		}
+	}
+	if strings.Contains(compose, "nut_host:") {
+		t.Error("base Compose must not attach the optional host NUT bridge")
+	}
+}
+
+func TestComposeNetworkOverlayPreservesContainerIsolation(t *testing.T) {
+	for _, name := range []string{"compose.yaml", "compose.legacy.yaml", "compose.auth.yaml", "compose.nut-host.yaml"} {
+		compose := readRepositoryFile(t, "deploy", "compose", name)
+		for _, line := range strings.Split(compose, "\n") {
+			line = strings.TrimSpace(line)
+			for _, forbidden := range []string{
+				"network_mode:", "ports:", "privileged:", "cap_add:",
+				"entrypoint:", "command:", "post_start:", "pre_start:",
+				"gw_priority:", "interface_name:", "driver:", "driver_opts:",
+			} {
+				if strings.HasPrefix(line, forbidden) {
+					// The log driver's existing json-file setting is unrelated to networking.
+					if line == "driver: json-file" {
+						continue
+					}
+					t.Errorf("%s introduces unsupported deployment setting %q", name, forbidden)
+				}
+			}
+		}
+	}
+
+	overlay := readRepositoryFile(t, "deploy", "compose", "compose.nut-host.yaml")
+	for _, required := range []string{
+		"    networks:\n      nut_host:\n        ipv4_address: ${N2U_NUT_HOST_IP:?",
+		"  nut_host:\n    external: true\n    name: ${N2U_NUT_HOST_NETWORK:?",
+	} {
+		if !strings.Contains(overlay, required) {
+			t.Errorf("host NUT overlay is missing explicit network contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{"environment:", "volumes:", "image:", "mac_address:", "      lan:"} {
+		if strings.Contains(overlay, forbidden) {
+			t.Errorf("host NUT overlay must not override runtime or LAN identity through %q", forbidden)
+		}
+	}
+}
+
+func TestLegacyComposeDiffIsOnlyMACPlacement(t *testing.T) {
+	canonical := readRepositoryFile(t, "deploy", "compose", "compose.yaml")
+	expected := strings.Replace(canonical,
+		"# Shared Linux macvlan deployment; Docker Compose 2.23.2 or later.",
+		"# Alternate base for Docker Engine 24 and Compose 2.20.x; do not merge with compose.yaml.", 1)
+	expected = strings.Replace(expected, "    networks:\n      lan:\n",
+		"    mac_address: ${N2U_DEVICE_MAC:?set the stable gateway identity MAC address}\n    networks:\n      lan:\n        priority: 100\n", 1)
+	expected = strings.Replace(expected, "        mac_address: ${N2U_DEVICE_MAC:?set the stable gateway identity MAC address}\n", "", 1)
+	if got := readRepositoryFile(t, "deploy", "compose", "compose.legacy.yaml"); got != expected {
+		t.Fatal("legacy template drifted beyond reviewed MAC placement")
+	}
+}
+
+func TestSharedDaemonExampleDoesNotInventMACOrRequirePrivileges(t *testing.T) {
+	env := readRepositoryFile(t, "deploy", "systemd", "n2u.env.example")
+	for _, line := range []string{"N2U_NETWORK_MODE=shared", "N2U_DEVICE_IP=", "N2U_NUT_ADDRESS=127.0.0.1:3493"} {
+		if !strings.Contains(env, line) {
+			t.Fatal("shared daemon environment incomplete")
+		}
+	}
+	if strings.Contains(env, "N2U_DEVICE_MAC=") || strings.Contains(env, "N2U_IMAGE=") {
+		t.Fatal("daemon must derive host MAC and not import Compose environment")
+	}
+	unit := readRepositoryFile(t, "deploy", "systemd", "nut-2-unifi-ups-gateway.service")
+	for _, line := range []string{"DynamicUser=yes", "StateDirectory=n2u", "StateDirectoryMode=0700", "CapabilityBoundingSet=\n", "AmbientCapabilities=\n", "NoNewPrivileges=yes"} {
+		if !strings.Contains(unit, line) {
+			t.Fatal("daemon service hardening incomplete")
+		}
+	}
+}

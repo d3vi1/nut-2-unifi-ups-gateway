@@ -1,73 +1,100 @@
 # Synology Container Manager
 
-Synology is one deployment option, not a requirement of the gateway.
-Use the shared [installation, authentication, backup and update guide](installation.md)
-and the same Compose release bundle as any Linux host.
+A DiskStation is a NAS, not the UPS appliance itself. Use `separate` mode so
+the NAS keeps its existing LAN identity and the gateway gets its own IP/MAC.
+Do not use `shared` on DSM to work around container networking.
 
-## Container Manager setup
+## Choose the compatible template
 
-1. Install Container Manager. Docker Compose must be available to the account
-   administering the project. DSM may package the Compose executable separately;
-   use the executable supplied by Container Manager rather than installing a
-   second Docker engine.
-2. Create a dedicated project folder, for example
-   `/volume1/docker/nut-2-unifi-ups-gateway`.
-3. Download and verify the published Compose bundle there using the
-   [shared procedure](installation.md#download-and-verify).
-4. Edit `.env`, then validate and start with Compose. Select the same folder if
-   using Container Manager's project UI; do not create a second project over the
-   same state volume.
-
-Container administration may require `sudo -i` over SSH. The gateway process
-itself runs as non-root UID/GID `65532:65532`.
-
-## Reading DSM's NUT service
-
-For the NUT server on the same NAS, start with:
-
-```dotenv
-N2U_NUT_ADDRESS=127.0.0.1:3493
-N2U_NUT_UPS=ups
-N2U_NUT_ALLOW_INSECURE_REMOTE=false
-```
-
-Use the actual served UPS name if it differs. Host networking preserves local
-loopback access and avoids a bridge container's different source address.
-If NUT runs elsewhere, follow [remote NUT configuration](installation.md#configure-nut-and-network).
-
-Check telemetry read-only before adoption, if `upsc` is available:
+Check the versions supplied by Container Manager:
 
 ```sh
-upsc ups@127.0.0.1
+docker version --format '{{.Server.Version}}'
+docker compose version --short
 ```
 
-Do not edit DSM's `/etc/ups`, `/usr/syno/etc/ups`, firewall or Docker engine
-storage to make the gateway work. Keep the NAS's existing UPS shutdown protection.
+The executable may not be on a non-interactive SSH PATH; use the Docker executable
+supplied by Container Manager. Do not install a second engine.
 
-For an authenticated server, use the shared secret-file overlay with a private
-path under your project folder. Never store the password in `.env`.
-For Network configuration/version reconciliation, use the explicit
-[trusted-LAN compatibility options](installation.md#unifi-compatibility-options);
-leave the obsolete volatile experiment disabled.
+- Compose **2.23.2 or newer**: base `compose.yaml`.
+- Compose **2.20.x with Engine 24**: alternate base `compose.legacy.yaml`.
+  It puts the MAC at service level and gives the LAN attachment highest priority.
+  It is not an overlay: never combine it with `compose.yaml`.
+- Other older combinations need validation first; never fall back to the old
+  host-network template or add privileges to make validation pass.
 
-## Host-specific limitations
+The alternate base differs only in version-specific MAC placement and attachment
+priority. Priority does not select a default route or guarantee an `eth0` name.
+Both bases have the same runtime, state volume and hardening. Per-network MACs
+are preferred on newer engines; see
+[Docker's Compose reference](https://docs.docker.com/reference/compose-file/services/#mac_address).
 
-Some DSM kernels lack the PIDs cgroup controller. Docker may warn that the
-requested process limit is ignored. The gateway remains a single static process
-without a shell; this warning does not establish that the host enforces the limit.
+## Prepare and migrate
 
-Network's **NUT Server** setting is separate from reading DSM NUT. Only advertise
-a service after verifying it from another LAN host at the gateway's advertised
-IP and served name/port. Do not advertise a loopback-only service.
-[Advertisement checks](configuration.md#optional-nut-server-advertisement).
+Follow [dedicated LAN preparation](installation.md#prepare-the-dedicated-lan-network)
+and [migration from 0.9.0](installation.md#migrate-from-host-networking). Network
+creation is an administrator action; the gateway does not alter the NAS network.
+Choose the actual existing LAN parent interface, which may be an OVS or bond
+interface on DSM rather than `eth0`. Do not create VLAN interfaces or change
+bond/OVS settings merely to match an example.
 
-## Existing installations
+Keep the existing Compose project name and original state volume. Preserve the
+already-adopted UPS MAC, configure it as the real macvlan endpoint MAC, and reserve
+a **different unused IP** from the NAS. Do not print adoption state or change the
+NAS MAC. Stage the version-matched bundle separately from the active `.env`.
 
-The source templates moved from `deploy/synology` to `deploy/compose` and the
-first 0.9.0 bundle is named `-compose`. **Do not move or recreate the state volume.**
-The Compose project name and state mount remain unchanged. Keep your private
-site configuration and prior image/Compose set for rollback.
+## Reading NUT on the same NAS
 
-Use [Update](installation.md#update) and [Roll back](installation.md#roll-back).
-Do not extract a new bundle over your active `.env`. Never use `--volumes`.
-For other problems, start with [Troubleshooting](troubleshooting.md).
+Macvlan cannot directly contact its host's LAN address. Add the optional
+`compose.nut-host.yaml` overlay and follow the
+[internal bridge instructions](installation.md#nut-on-the-same-host).
+For example, after an administrator has provisioned and checked a non-overlapping
+internal bridge (replace all synthetic values):
+
+```dotenv
+N2U_NUT_HOST_NETWORK=n2u-nut-host
+N2U_NUT_HOST_IP=172.30.90.2
+N2U_NUT_ADDRESS=172.30.90.1:3493
+N2U_NUT_UPS=ups
+N2U_NUT_ALLOW_INSECURE_REMOTE=true
+N2U_UNIFI_NUT_SERVER_ENABLED=false
+```
+
+The upstream must already listen on the bridge gateway or a suitable wildcard
+address, and its ACL plus DSM firewall must permit that bridge-side client IP.
+The plaintext opt-in is required even on this private bridge. A loopback-only
+server cannot be reached by this arrangement. Do not silently change DSM UPS
+files, firewall rules or service bindings; stop and review an administrator-owned
+NUT access plan if these prerequisites are absent.
+
+For the older compatible base:
+
+```sh
+docker compose --env-file .env -f compose.legacy.yaml -f compose.nut-host.yaml config --quiet
+docker compose --env-file .env -f compose.legacy.yaml -f compose.nut-host.yaml pull
+docker compose --env-file .env -f compose.legacy.yaml -f compose.nut-host.yaml up -d
+docker compose --env-file .env -f compose.legacy.yaml -f compose.nut-host.yaml exec -T gateway /nut-2-unifi-ups-gateway healthcheck
+```
+
+Use the same base and overlays for every command. Add `-f compose.auth.yaml` if
+NUT requires a credential file. Select that exact file combination if managing
+the project in DSM's UI; if the UI cannot select multiple files, administer this
+project through its bundled Compose CLI rather than creating another project.
+
+There is no shell, NUT proxy or downstream NUT server in the container. Health
+loopback now belongs to the container, not the NAS. Network's **NUT Server**
+advertisement must remain off unless a separate service is independently
+verified at the gateway's new LAN IP.
+
+## Validate before relying on it
+
+The process runs as UID/GID `65532:65532` with dropped capabilities. Some DSM
+kernels do not enforce the requested PIDs limit; this is not a reason to make the
+container privileged. Keep the NAS's existing UPS shutdown protection.
+
+Configuration parsing is only a schema check. Real MAC/IP assignment, host NUT
+reachability, Online state, separate NAS visibility and expected pairings must
+be checked in an agreed live maintenance window. Physical shutdown testing is
+separate. See [compatibility](compatibility.md), [update](installation.md#update)
+and [rollback](installation.md#roll-back). Never use `--volumes` or delete state
+as a migration step.

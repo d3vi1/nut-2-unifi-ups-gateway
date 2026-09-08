@@ -48,3 +48,15 @@ jobs:
           tags: ghcr.io/d3vi1/nut-2-unifi-ups-gateway:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Validate separate network Compose configuration without deployment
+        env:
+          N2U_IMAGE: example.invalid/n2u:test
+          N2U_LAN_NETWORK: n2u-test-lan
+          N2U_DEVICE_IP: 192.0.2.30
+          N2U_DEVICE_MAC: 02:00:00:00:00:30
+          N2U_NUT_ADDRESS: 172.30.90.1:3493
+          N2U_NUT_HOST_NETWORK: n2u-test-host
+          N2U_NUT_HOST_IP: 172.30.90.2
+        run: |
+          docker compose --env-file /dev/null -f deploy/compose/compose.yaml config --quiet
+          docker compose --env-file /dev/null -f deploy/compose/compose.yaml -f deploy/compose/compose.nut-host.yaml config --quiet

@@ -218,6 +218,8 @@ func TestReleaseUsesNumericReservationAndExactAssetSet(t *testing.T) {
 		"go run ./cmd/releaseguard upload-assets",
 		"go run ./cmd/releaseguard publish",
 		"N2U_RELEASE_POLICY_TOKEN: ${{ secrets.N2U_RELEASE_POLICY_TOKEN }}",
+		"cp deploy/compose/compose.nut-host.yaml \"$bundle_dir/compose.nut-host.yaml\"",
+		"cp deploy/compose/compose.legacy.yaml \"$bundle_dir/compose.legacy.yaml\"",
 	} {
 		if !strings.Contains(release, want) {
 			t.Errorf("release workflow is missing fail-closed reservation marker %q", want)

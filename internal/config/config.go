@@ -64,10 +64,11 @@ type NUTServerAdvertisement struct {
 }
 
 type Device struct {
-	MAC      string
-	Serial   string
-	Hostname string
-	IP       string
+	NetworkMode string
+	MAC         string
+	Serial      string
+	Hostname    string
+	IP          string
 }
 
 type Runtime struct {
@@ -100,10 +101,11 @@ func Load() (Config, error) {
 			},
 		},
 		Device: Device{
-			MAC:      os.Getenv("N2U_DEVICE_MAC"),
-			Serial:   os.Getenv("N2U_DEVICE_SERIAL"),
-			Hostname: value("N2U_DEVICE_HOSTNAME", "nut-2-unifi-ups-gateway"),
-			IP:       os.Getenv("N2U_DEVICE_IP"),
+			NetworkMode: value("N2U_NETWORK_MODE", "separate"),
+			MAC:         os.Getenv("N2U_DEVICE_MAC"),
+			Serial:      os.Getenv("N2U_DEVICE_SERIAL"),
+			Hostname:    value("N2U_DEVICE_HOSTNAME", "nut-2-unifi-ups-gateway"),
+			IP:          os.Getenv("N2U_DEVICE_IP"),
 		},
 		Runtime: Runtime{
 			StateFile:     value("N2U_STATE_FILE", "/var/lib/n2u/state.json"),
@@ -148,6 +150,9 @@ func Load() (Config, error) {
 	if err := rejectUnknownEnvironment(); err != nil {
 		return Config{}, err
 	}
+	if c.Device.NetworkMode == "" {
+		return Config{}, errors.New("N2U_NETWORK_MODE must be shared or separate")
+	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -155,6 +160,11 @@ func Load() (Config, error) {
 }
 
 func (c Config) Validate() error {
+	switch c.Device.NetworkMode {
+	case "", "shared", "separate":
+	default:
+		return errors.New("N2U_NETWORK_MODE must be shared or separate")
+	}
 	if c.UniFi.ReportedFirmwareSync && c.UniFi.ConfigReceiptMode != "persistent" {
 		return errors.New("reported firmware synchronization requires persistent configuration receipts")
 	}
@@ -225,7 +235,7 @@ func (c Config) Validate() error {
 	}
 	if c.Device.MAC != "" {
 		hw, err := net.ParseMAC(c.Device.MAC)
-		if err != nil || len(hw) != 6 || hw[0]&1 != 0 {
+		if err != nil || len(hw) != 6 || hw[0]&1 != 0 || hw.String() == "00:00:00:00:00:00" {
 			return errors.New("N2U_DEVICE_MAC must be a six-byte unicast MAC address")
 		}
 	}
@@ -346,6 +356,7 @@ func loopbackHost(host string) bool {
 }
 
 var knownEnvironment = map[string]struct{}{
+	"N2U_NETWORK_MODE":                       {},
 	"N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE": {},
 	"N2U_NUT_ADDRESS":                        {}, "N2U_NUT_UPS": {}, "N2U_NUT_USERNAME": {},
 	"N2U_NUT_PASSWORD": {}, "N2U_NUT_PASSWORD_FILE": {}, "N2U_NUT_TIMEOUT": {},

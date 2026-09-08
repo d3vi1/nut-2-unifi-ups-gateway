@@ -6,10 +6,15 @@ Start with the real gateway version and a small, recent log sample:
 docker compose --env-file .env -f compose.yaml exec -T gateway /nut-2-unifi-ups-gateway version
 docker compose --env-file .env -f compose.yaml ps
 docker compose --env-file .env -f compose.yaml logs --tail 30 gateway
-curl -fsS http://127.0.0.1:9199/readyz
+docker compose --env-file .env -f compose.yaml exec -T gateway /nut-2-unifi-ups-gateway healthcheck
 ```
 
 Add `-f compose.auth.yaml` to Compose commands if using NUT authentication.
+Add `-f compose.nut-host.yaml` for same-host NUT. On the older supported
+Compose/Engine combination substitute `compose.legacy.yaml` for the base file.
+Container loopback is not host loopback; `/readyz` and metrics are private to
+that network namespace unless the operator deliberately changes the listener.
+For the native `shared` daemon, localhost health URLs refer to the Linux host.
 Commands run on the gateway host. Never post `.env`, state files, passwords,
 unfiltered `upsc`, controller replies or packet captures. Even when gateway log
 messages are identity-free, Docker prefixes and host diagnostics may not be.
@@ -38,6 +43,7 @@ These codes identify a failure category, not the exact root cause.
 | Reason | Check locally |
 |---|---|
 | `configuration_invalid` | Variable names, duration syntax, required pairs and mutually exclusive options in the [configuration reference](configuration.md). Validate Compose with `config --quiet`, not a printed configuration. |
+| `network_identity_invalid` | Set a real local `N2U_DEVICE_IP`; `separate` additionally needs the pinned `N2U_DEVICE_MAC`. Verify one active Ethernet interface with that IP, valid broadcast subnet, and MAC. No random/nonlocal fallback exists. |
 | `state_read`, `state_permissions` | The original state volume is mounted; its files and directory have private ownership/permissions for UID/GID 65532. Never solve this with world-readable permissions. |
 | `state_invalid`, `identity_mismatch` | Preserve the volume and private backup. Confirm the image/environment matches this instance; do not edit identity JSON or generate a replacement. |
 | `state_write` | Free space, read-only mounts and storage health. Repair the existing volume; do not delete it. |

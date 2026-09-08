@@ -3,6 +3,18 @@
 All notable changes are documented here. The project follows
 [Semantic Versioning](https://semver.org/) after its first tagged release.
 
+## Unreleased — 0.9.1 candidate
+
+- Explicit `shared` native-daemon mode for a Linux UPS appliance and `separate`
+  container mode for a NAS/server, both using the real selected interface MAC/IP.
+- Fail-closed local interface and persistent identity checks; source-bound IPv4
+  inform transport, with original HTTP authority and TLS verification retained.
+- Dedicated-LAN Compose deployment, optional internal bridge for host NUT, and
+  an alternate base for Engine 24 / Compose 2.20.x. Existing state is preserved;
+  changing the deployed network remains an operator-controlled migration.
+- Native systemd examples and migration guidance. Both modes remain CANDIDATE
+  for exact-host/controller acceptance; no new power-control capability.
+
 ## 0.9.0 - 2026-09-05
 
 ### Added

@@ -8,6 +8,7 @@ Missing values are omitted, never manufactured to make Network look complete.
 
 | Behavior | Evidence and boundary |
 |---|---|
+| 0.9.1 `shared` daemon and `separate` dedicated-IP container | **CANDIDATE** live interoperability; local identity, persistence and bound-transport tests are separate from field acceptance |
 | NUT telemetry, adoption and Safe Shutdown Pairing | **OBSERVED** with the USWDA26 carrier on Network 10.6.102 / UniFi OS 5.1.31, using a Synology-hosted amd64 container |
 | Multi-field configuration reconciliation | **OBSERVED** backend acceptance; an operator also observed Online and pairings after the corrected memory-mode parser |
 | Configuration receipt across process restart and container recreation | **OBSERVED** private-file restoration and healthy informs; not proof of all subsequent UI operations |
@@ -26,13 +27,18 @@ See [protocol evidence](protocol-evidence.md) for the detailed source boundaries
 
 The image is built for Linux amd64, arm64, arm/v7 and 386. Cross-build success
 does not mean every architecture/host combination has been tested in the field.
-The shared deployment targets Docker Engine with Linux host networking;
-Synology is the current field-tested host.
+The 0.9.0 field observation used host networking with a separate emulated MAC;
+it does not validate the new network identity modes. 0.9.1 container templates
+target rootful Docker on Linux with a dedicated macvlan interface. The native
+daemon targets a Linux appliance intentionally represented as the UPS itself.
 
 A non-root process is not a rootless Docker engine. Docker Desktop, user-namespace
-remapping, rootless engine networking, Kubernetes and non-host-network deployments
+remapping, rootless engine networking and Kubernetes
 require their own validation; do not assume USB access or extra capabilities will
-fix adoption. [Docker's platform limitations](https://docs.docker.com/engine/network/drivers/host/).
+fix adoption. [Docker's platform limitations](https://docs.docker.com/engine/network/drivers/macvlan/).
+The canonical Compose file needs 2.23.2 or newer. Engine 24 with Compose 2.20.x
+has a version-specific alternate base. Configuration parsing is not proof of
+MAC assignment, bridge/NUT access, discovery, or controller acceptance.
 
 ## Panel limitations
 

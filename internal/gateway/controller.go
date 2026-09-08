@@ -62,12 +62,36 @@ type HTTPController struct {
 // NewHTTPController constructs an inform client with bounded I/O and TLS 1.2+
 // for HTTPS controllers.
 func NewHTTPController(timeout time.Duration) (*HTTPController, error) {
+	return newBoundHTTPController(timeout, "", "")
+}
+
+// newBoundHTTPController pins both sides of the IPv4 connection. URL Host and
+// TLS hostname verification remain unchanged. Controller DNS is resolved once
+// at startup so the transport and INFORM cannot select different addresses.
+// Empty addresses retain the unbound constructor for isolated transport tests.
+func newBoundHTTPController(timeout time.Duration, sourceIP, controllerIP string) (*HTTPController, error) {
 	if timeout <= 0 || timeout > time.Minute {
 		return nil, errors.New("controller timeout must be positive and at most one minute")
 	}
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	dialContext := dialer.DialContext
+	if sourceIP != "" || controllerIP != "" {
+		source, destination := net.ParseIP(sourceIP).To4(), net.ParseIP(controllerIP).To4()
+		if source == nil || destination == nil || source.IsUnspecified() || source.IsMulticast() || destination.IsUnspecified() || destination.IsMulticast() {
+			return nil, errors.New("controller binding requires usable source and destination IPv4 addresses")
+		}
+		dialer.LocalAddr = &net.TCPAddr{IP: source}
+		dialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
+			_, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, errors.New("invalid controller transport address")
+			}
+			return dialer.DialContext(ctx, "tcp4", net.JoinHostPort(destination.String(), port))
+		}
+	}
 	transport := &http.Transport{
 		Proxy:                  nil,
-		DialContext:            (&net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:            dialContext,
 		ForceAttemptHTTP2:      true,
 		MaxIdleConns:           4,
 		MaxIdleConnsPerHost:    2,

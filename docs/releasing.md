@@ -139,8 +139,11 @@ TUF metadata, or expose a GitHub token to the offline verification step.
 
 The release assets are named `nut-2-unifi-ups-gateway-vVERSION-compose.tar.gz`
 and `nut-2-unifi-ups-gateway-vVERSION-compose.SHA256SUMS`. The archive contains
-one versioned root with only `.env`, `compose.yaml`, `compose.auth.yaml` and
-`RELEASE-METADATA.txt`. Both Linux and Synology use this same bundle.
+one versioned root with only `.env`, `compose.yaml`, `compose.legacy.yaml`,
+`compose.auth.yaml`, `compose.nut-host.yaml` and `RELEASE-METADATA.txt` (six files).
+Both Linux and Synology use this same bundle, selecting one base file and any
+needed overlays. The native `shared` daemon examples are source files under
+`deploy/systemd`, not additional release assets or a published binary promise.
 
 Templates live in `deploy/compose`. Keep the project name and named state volume
 stable. Review any template change together with its exact releaseguard hashes,

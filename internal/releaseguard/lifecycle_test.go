@@ -544,6 +544,12 @@ func testComposeMembers(t *testing.T, release Context, binding bindingInput) map
 		root + "/compose.auth.yaml": {
 			mode: 0o644, typeflag: tar.TypeReg, data: mustReadTestFile(t, "../../deploy/compose/compose.auth.yaml"),
 		},
+		root + "/compose.nut-host.yaml": {
+			mode: 0o644, typeflag: tar.TypeReg, data: mustReadTestFile(t, "../../deploy/compose/compose.nut-host.yaml"),
+		},
+		root + "/compose.legacy.yaml": {
+			mode: 0o644, typeflag: tar.TypeReg, data: mustReadTestFile(t, "../../deploy/compose/compose.legacy.yaml"),
+		},
 		root + "/RELEASE-METADATA.txt": {
 			mode: 0o644, typeflag: tar.TypeReg, data: []byte(metadata),
 		},
@@ -569,7 +575,7 @@ func makeTestComposeBundle(t *testing.T, release Context, binding bindingInput, 
 	gzipWriter := gzip.NewWriter(&compressed)
 	tarWriter := tar.NewWriter(gzipWriter)
 	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
-	order := []string{root + "/", root + "/.env", root + "/compose.yaml", root + "/compose.auth.yaml", root + "/RELEASE-METADATA.txt"}
+	order := []string{root + "/", root + "/.env", root + "/compose.yaml", root + "/compose.auth.yaml", root + "/compose.nut-host.yaml", root + "/compose.legacy.yaml", root + "/RELEASE-METADATA.txt"}
 	for name := range members {
 		found := false
 		for _, existing := range order {
@@ -958,6 +964,20 @@ func TestComposeBundleMustBindImageAndExactTopology(t *testing.T) {
 			},
 		},
 		{
+			name: "missing host NUT overlay",
+			mutate: func(members map[string]testBundleMember) {
+				delete(members, root+"/compose.nut-host.yaml")
+			},
+		},
+		{
+			name: "host NUT overlay changes runtime privileges",
+			mutate: func(members map[string]testBundleMember) {
+				member := members[root+"/compose.nut-host.yaml"]
+				member.data = []byte("services:\n  gateway:\n    privileged: true\n")
+				members[root+"/compose.nut-host.yaml"] = member
+			},
+		},
+		{
 			name: "extra member",
 			mutate: func(members map[string]testBundleMember) {
 				members[root+"/unexpected"] = testBundleMember{mode: 0o644, typeflag: tar.TypeReg, data: []byte("unexpected")}
@@ -1006,15 +1026,39 @@ func TestReviewedComposeTemplatesRemainAligned(t *testing.T) {
 	binding := mustTestBinding(t, release)
 	compose := mustReadTestFile(t, "../../deploy/compose/compose.yaml")
 	composeAuth := mustReadTestFile(t, "../../deploy/compose/compose.auth.yaml")
+	composeNUTHost := mustReadTestFile(t, "../../deploy/compose/compose.nut-host.yaml")
+	composeLegacy := mustReadTestFile(t, "../../deploy/compose/compose.legacy.yaml")
 	composeDigest := sha256.Sum256(compose)
 	composeAuthDigest := sha256.Sum256(composeAuth)
-	if hex.EncodeToString(composeDigest[:]) != composeSHA256 || hex.EncodeToString(composeAuthDigest[:]) != composeAuthSHA256 {
+	composeNUTHostDigest := sha256.Sum256(composeNUTHost)
+	composeLegacyDigest := sha256.Sum256(composeLegacy)
+	if hex.EncodeToString(composeDigest[:]) != composeSHA256 || hex.EncodeToString(composeAuthDigest[:]) != composeAuthSHA256 || hex.EncodeToString(composeNUTHostDigest[:]) != composeNUTHostSHA256 || hex.EncodeToString(composeLegacyDigest[:]) != composeLegacySHA256 {
 		t.Fatal("reviewed compose digest constants are stale")
 	}
 	sourceEnvironment := string(mustReadTestFile(t, "../../deploy/compose/.env.example"))
 	generated := fmt.Sprintf("# Generated for %s; keep the OCI manifest digest pinned.\n", release.Tag) + strings.Replace(sourceEnvironment, "N2U_IMAGE="+ImageName+":edge", "N2U_IMAGE="+ImageName+"@"+binding.digest, 1)
 	if generated != expectedBundleEnvironment(release, binding) {
 		t.Fatal("reviewed environment template is stale")
+	}
+}
+
+func TestLegacyBundleTemplateCannotBeMissingOrModified(t *testing.T) {
+	release := loadTestContext(t, validEnvironment())
+	binding := mustTestBinding(t, release)
+	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
+	for _, remove := range []bool{false, true} {
+		bundle := makeTestComposeBundle(t, release, binding, func(members map[string]testBundleMember) {
+			if remove {
+				delete(members, root+"/compose.legacy.yaml")
+				return
+			}
+			member := members[root+"/compose.legacy.yaml"]
+			member.data = append(member.data, []byte("\n# unreviewed change\n")...)
+			members[root+"/compose.legacy.yaml"] = member
+		})
+		if err := verifyComposeBundle(release, binding, bundle); err == nil {
+			t.Fatal("unreviewed legacy template accepted")
+		}
 	}
 }
 

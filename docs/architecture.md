@@ -23,17 +23,22 @@ configuration and reported-version receipts use separate private files in the
 same volume. All are instance-specific; no two gateways may share that directory.
 Neither receipt changes the source protocol profile or grants command authority.
 
-## Why host networking on Linux
+## Explicit network identity
 
-UniFi discovery uses IPv4 UDP broadcast and a route-selected source interface.
-Host networking lets the process use that interface and reach a same-host NUT
-server on loopback. This also suits Synology's address-restricted local `upsd`;
-a bridge container would have a different source address and loopback namespace.
-Remote NUT remains supported through an explicit trusted-network opt-in.
-Non-root process execution does not establish rootless-engine or Docker Desktop
-network compatibility; see [the deployment limits](compatibility.md).
+`shared` runs as a native daemon on a Linux UPS appliance and uses that host's
+real IP/MAC. `separate` runs in a container with its own direct-LAN IP/MAC on a
+multi-purpose host. Both validate the actual selected interface before state
+creation and compare its MAC with persistent adoption identity. No fake MAC or
+route-guessed device IP remains. HTTP uses a bound source IPv4 and the startup
+controller IPv4; URL authority and TLS verification remain intact. UDP discovery
+binds that same source. The runtime does not provision or certify host networking.
 
-Host networking does not require root here: NUT uses TCP/3493, discovery uses
+Shared mode can use host-loopback NUT. Separate mode may attach an optional
+internal bridge for host NUT access, without another default route. NUT remains
+independent from the controller transport. See [runtime modes](runtime-modes.md)
+and [deployment limits](compatibility.md).
+
+Neither mode requires root: NUT uses TCP/3493, discovery uses
 UDP/10001, and the health endpoint uses TCP/9199. The supplied Compose
 deployment drops all capabilities, and the process never binds a privileged
 port. The identity-free health server also limits aggregate accepted
