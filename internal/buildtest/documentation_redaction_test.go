@@ -172,7 +172,7 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 	expected := map[string]string{
 		"CHANGELOG.md":                "84f96bdddf935cba50cc51f1189e883e18ee225f99525c715d3dd574be4fc5cc",
 		"README.md":                   "599f290591746b0c2e45cedb08d83b3c8aee3f73752b2a27dc7bee9cd45853bc",
-		"SECURITY.md":                 "bc4743a0ffe7e7f09d2815c08051e12c2b30631983f7fe2aa78ac9d2f9a66982",
+		"SECURITY.md":                 "88440c8f0f00b072540c4cbf988173d9b0870f86c4408e0c4d9275d8969ee112",
 		"deploy/compose/.env.example": "1c171e5a571aa1bb7b40021143d45d6c1d7d77aa373c538d05625b851deceedc",
 		"docs/configuration.md":       "50d5763107607a901f488446eb666f24e6e4cf46c3bfbdc671efefc8990beb52",
 		"docs/protocol-evidence.md":   "cf20926b280ce8fd4280834a3e06a5e2c529347f2c9de9ca5efb4e8df5059b60",
