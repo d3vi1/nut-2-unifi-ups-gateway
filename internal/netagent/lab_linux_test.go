@@ -73,14 +73,67 @@ func TestLinuxManagedNetworkLab(t *testing.T) {
 	// A local bridge supplies an Ethernet parent without a physical uplink.
 	// Unlike dummy, bridge support is already required by Docker on Synology.
 	parent := labLink(t, "n2u-lab-parent", "bridge", 0, nil)
-	client := labLink(t, "n2u-lab-client", "macvlan", parent.Index, fixtureMAC)
+	client := labLink(t, "n2u-lab-client", "macvlan", parent.Index, net.HardwareAddr{2, 0, 0, 0, 0, 31})
 	server := labLink(t, "n2u-lab-server", "macvlan", parent.Index, net.HardwareAddr{2, 0, 0, 0, 0, 1})
+	if _, err := selectedInterface(fixtureMAC); err == nil {
+		t.Fatal("fallback accepted an interface without bootstrap addressing")
+	}
+	if err := address(parent.Index, "169.254.254.50", 24, 3600, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectedInterface(fixtureMAC); err == nil {
+		t.Fatal("fallback accepted a non-macvlan bridge")
+	}
+	if err := address(parent.Index, "169.254.254.50", 24, 0, true); err != nil {
+		t.Fatal(err)
+	}
 	if err := address(client.Index, "169.254.254.30", 24, 3600, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := address(server.Index, "169.254.254.31", 24, 3600, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectedInterface(fixtureMAC); err == nil {
+		t.Fatal("fallback accepted ambiguous bootstrap interfaces")
+	}
+	if err := address(server.Index, "169.254.254.31", 24, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := address(client.Index, "203.0.113.30", 24, 3600, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectedInterface(fixtureMAC); err == nil {
+		t.Fatal("fallback accepted a global address")
+	}
+	if err := address(client.Index, "203.0.113.30", 24, 0, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := address(server.Index, "198.51.100.1", 24, 3600, false); err != nil {
 		t.Fatal(err)
 	}
+	// Force the kernel to reject a malformed link address. Even this failure
+	// must leave the bootstrap selector intact for the next helper process.
+	if _, err := prepare(client, net.HardwareAddr{2, 0, 0, 0, 30}); err == nil {
+		t.Fatal("kernel accepted an invalid Ethernet address length")
+	}
+	if !bootstrapInterface(client) {
+		t.Fatal("failed MAC mutation removed bootstrap addressing")
+	}
+	host := labLink(t, "n2u-lab-nut", "bridge", 0, fixtureMAC)
+	if err := address(host.Index, "172.31.253.2", 29, 3600, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectedInterface(fixtureMAC); err == nil {
+		t.Fatal("desired MAC on the NUT bridge permitted fallback to another link")
+	}
+	hostMAC := net.HardwareAddr{2, 0, 0, 0, 0, 40}
+	link := make([]byte, 16)
+	copy(link[4:], u32(uint32(host.Index)))
+	link = append(link, attr(syscall.IFLA_ADDRESS, hostMAC)...)
+	if err := rtnl(syscall.RTM_NEWLINK, 0, link); err != nil {
+		t.Fatal(err)
+	}
+	host.HardwareAddr = hostMAC
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var silent atomic.Bool
@@ -107,6 +160,19 @@ func TestLinuxManagedNetworkLab(t *testing.T) {
 	}
 	if first.Address != "192.0.2.30" {
 		t.Fatal("synthetic DHCP did not bind")
+	}
+	actual, err := net.InterfaceByIndex(client.Index)
+	if err != nil || actual.HardwareAddr.String() != fixtureMAC.String() {
+		t.Fatal("bootstrap MAC was not replaced by the requested identity")
+	}
+	client = *actual
+	hostAfter, err := net.InterfaceByIndex(host.Index)
+	if err != nil || hostAfter.HardwareAddr.String() != host.HardwareAddr.String() {
+		t.Fatal("managed setup changed the host-NUT bridge identity")
+	}
+	hostAddrs, err := hostAfter.Addrs()
+	if err != nil || len(hostAddrs) != 1 || hostAddrs[0].String() != "172.31.253.2/29" {
+		t.Fatal("managed setup changed the host-NUT bridge address")
 	}
 	t.Log("synthetic DHCP acquired; checking renewal without generation change")
 	deadline = time.Now().Add(12 * time.Second)
@@ -199,6 +265,37 @@ func TestLinuxManagedNetworkLab(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("static agent did not stop")
 	}
+	// A crash can leave the reserved route after the short-lived address is
+	// gone. Fixture ONLINK permits constructing that precise no-address state.
+	route := func(metric uint32) []byte {
+		p := []byte{syscall.AF_INET, 0, 0, 0, syscall.RT_TABLE_MAIN, syscall.RTPROT_STATIC, syscall.RT_SCOPE_UNIVERSE, syscall.RTN_UNICAST}
+		p = append(p, u32(4)...) // RTNH_F_ONLINK
+		p = append(p, attr(syscall.RTA_GATEWAY, net.ParseIP("192.0.2.1").To4())...)
+		p = append(p, attr(syscall.RTA_OIF, u32(uint32(client.Index)))...)
+		return append(p, attr(syscall.RTA_PRIORITY, u32(metric))...)
+	}
+	owned, unexpected := route(42760), route(42761)
+	for _, p := range [][]byte{owned, unexpected} {
+		if err := rtnl(syscall.RTM_NEWROUTE, syscall.NLM_F_CREATE|syscall.NLM_F_EXCL, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := checkRoutes(client.Index, true, true); err == nil {
+		t.Fatal("unexpected default route accepted during recovery")
+	}
+	if err := rtnl(syscall.RTM_NEWROUTE, syscall.NLM_F_CREATE|syscall.NLM_F_EXCL, owned); err == nil {
+		t.Fatal("failed route preflight partially deleted the reserved route")
+	}
+	if err := rtnl(syscall.RTM_DELROUTE, 0, unexpected); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepare(client, fixtureMAC); err != nil {
+		t.Fatal("reserved-route recovery failed", err)
+	}
+	if err := checkRoutes(client.Index, false, false); err != nil {
+		t.Fatal("reserved route remained after recovery", err)
+	}
+	t.Log("desired-MAC anti-confusion and non-partial reserved-route recovery passed")
 	// Stop heartbeats without withdrawing: the same kernel expiry path as a
 	// killed/frozen helper, without extra process-control privileges.
 	o := owner{iface: client}

@@ -211,7 +211,12 @@ func Run(ctx context.Context, c Config) error {
 	if !boundedPause(ctx.Done(), 5*time.Second) {
 		return nil
 	}
-	if err := prepare(iface); err != nil {
+	fresh, err := selectedInterface(mac)
+	if err != nil || fresh.Index != iface.Index || fresh.HardwareAddr.String() != iface.HardwareAddr.String() {
+		return errors.New("managed interface changed before preparation")
+	}
+	iface, err = prepare(fresh, mac)
+	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(netconfig.StatusPath), 0755); err != nil {

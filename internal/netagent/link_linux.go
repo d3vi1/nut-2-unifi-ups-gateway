@@ -133,17 +133,64 @@ func selectedInterface(mac net.HardwareAddr) (net.Interface, error) {
 			count++
 		}
 	}
-	if count != 1 || selected.Flags&net.FlagUp == 0 || selected.Flags&net.FlagBroadcast == 0 || selected.Flags&net.FlagLoopback != 0 {
+	if count == 0 {
+		// Some Engine 24 multi-network deployments ignore the requested MAC.
+		// Only the dedicated, uniquely identifiable bootstrap macvlan can be
+		// used in that case. Never select a host-NUT bridge or a global address.
+		for _, iface := range interfaces {
+			if !activeEthernet(iface) || requireMacvlan(iface) != nil || !bootstrapInterface(iface) {
+				continue
+			}
+			selected = iface
+			count++
+		}
+	}
+	if count != 1 || !activeEthernet(selected) {
 		return net.Interface{}, errors.New("one active LAN interface is required")
 	}
+	if err := requireMacvlan(selected); err != nil {
+		return net.Interface{}, err
+	}
+	return selected, nil
+}
+
+func activeEthernet(iface net.Interface) bool {
+	return len(iface.HardwareAddr) == 6 && iface.HardwareAddr[0]&1 == 0 && iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagBroadcast != 0 && iface.Flags&net.FlagLoopback == 0
+}
+
+func bootstrapInterface(iface net.Interface) bool {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false
+	}
+	_, subnet, _ := net.ParseCIDR("169.254.254.0/24")
+	count := 0
+	for _, a := range addrs {
+		n, ok := a.(*net.IPNet)
+		if !ok {
+			return false
+		}
+		if n.IP.To4() == nil && n.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		bits, total := n.Mask.Size()
+		if total != 32 || bits != 24 || !subnet.Contains(n.IP) {
+			return false
+		}
+		count++
+	}
+	return count == 1
+}
+
+func requireMacvlan(selected net.Interface) error {
 	// Verify macvlan via the kernel's link metadata, not an eth0 naming guess.
 	data, err := syscall.NetlinkRIB(syscall.RTM_GETLINK, syscall.AF_UNSPEC)
 	if err != nil {
-		return net.Interface{}, errors.New("link metadata unavailable")
+		return errors.New("link metadata unavailable")
 	}
 	msgs, err := syscall.ParseNetlinkMessage(data)
 	if err != nil {
-		return net.Interface{}, errors.New("invalid link metadata")
+		return errors.New("invalid link metadata")
 	}
 	for _, m := range msgs {
 		if m.Header.Type != syscall.RTM_NEWLINK || len(m.Data) < 16 || int(int32(binary.NativeEndian.Uint32(m.Data[4:]))) != selected.Index {
@@ -163,7 +210,7 @@ func selectedInterface(mac net.HardwareAddr) (net.Interface, error) {
 						break
 					}
 					if typ == 1 && string(nested[4:n]) == "macvlan\x00" {
-						return selected, nil
+						return nil
 					}
 					next := (n + 3) &^ 3
 					if next > len(nested) {
@@ -174,45 +221,97 @@ func selectedInterface(mac net.HardwareAddr) (net.Interface, error) {
 			}
 		}
 	}
-	return net.Interface{}, errors.New("managed interface must be macvlan")
+	return errors.New("managed interface must be macvlan")
+}
+
+// installMAC follows non-mutating preflight: guards pass before mutation.
+// Linux readback, not Docker's possibly stale inspection data, is authoritative.
+func installMAC(iface net.Interface, mac net.HardwareAddr) (net.Interface, error) {
+	if iface.HardwareAddr.String() != mac.String() {
+		p := make([]byte, 16)
+		copy(p[4:], u32(uint32(iface.Index)))
+		p = append(p, attr(syscall.IFLA_ADDRESS, mac)...)
+		if err := rtnl(syscall.RTM_NEWLINK, 0, p); err != nil {
+			return net.Interface{}, err
+		}
+	}
+	actual, err := selectedInterface(mac)
+	if err != nil || actual.Index != iface.Index || actual.HardwareAddr.String() != mac.String() {
+		return net.Interface{}, errors.New("managed MAC readback failed")
+	}
+	return actual, nil
 }
 
 // prepare accepts only Docker's dedicated bootstrap subnet; it never removes
 // an arbitrary host/global address. The network must be created --internal so
 // Docker installs no default route. It is intentionally a separate network.
-func prepare(iface net.Interface) error {
+func bootstrapAddresses(iface net.Interface) ([]*net.IPNet, error) {
 	_, bootstrap, _ := net.ParseCIDR("169.254.254.0/24")
 	addrs, err := iface.Addrs()
 	if err != nil {
-		return errors.New("interface addresses unavailable")
+		return nil, errors.New("interface addresses unavailable")
 	}
 	var remove []*net.IPNet
 	for _, a := range addrs {
 		n, ok := a.(*net.IPNet)
 		if !ok {
-			return errors.New("unexpected interface address")
+			return nil, errors.New("unexpected interface address")
 		}
 		if n.IP.To4() == nil {
 			if n.IP.IsLinkLocalUnicast() {
 				continue
 			}
-			return errors.New("managed LAN must be IPv4 only")
+			return nil, errors.New("managed LAN must be IPv4 only")
 		}
 		bits, total := n.Mask.Size()
 		if total != 32 || bits != 24 || !bootstrap.Contains(n.IP) {
-			return errors.New("refusing to replace an unmanaged address")
+			return nil, errors.New("refusing to replace an unmanaged address")
 		}
 		remove = append(remove, n)
 	}
-	if err := checkRoutes(iface.Index); err != nil {
-		return err
+	return remove, nil
+}
+
+func prepare(iface net.Interface, mac net.HardwareAddr) (net.Interface, error) {
+	remove, err := bootstrapAddresses(iface)
+	if err != nil {
+		return net.Interface{}, err
 	}
-	for _, n := range remove {
-		if err := address(iface.Index, n.IP.String(), 24, 0, true); err != nil {
-			return err
+	recovery := iface.HardwareAddr.String() == mac.String()
+	if err := checkRoutes(iface.Index, false, recovery); err != nil {
+		return net.Interface{}, err
+	}
+	actual, err := installMAC(iface, mac)
+	if err != nil {
+		// A failed MAC mutation must retain the bootstrap address so the
+		// next process can still identify the intended interface.
+		return net.Interface{}, err
+	}
+	after, err := bootstrapAddresses(actual)
+	if err != nil || len(after) != len(remove) {
+		return net.Interface{}, errors.New("bootstrap addresses changed during preparation")
+	}
+	for i := range after {
+		if after[i].String() != remove[i].String() {
+			return net.Interface{}, errors.New("bootstrap addresses changed during preparation")
 		}
 	}
-	return nil
+	if err := checkRoutes(actual.Index, true, recovery); err != nil {
+		return net.Interface{}, err
+	}
+	for _, n := range remove {
+		if err := address(actual.Index, n.IP.String(), 24, 0, true); err != nil {
+			return net.Interface{}, err
+		}
+	}
+	after, err = bootstrapAddresses(actual)
+	if err != nil || len(after) != 0 {
+		return net.Interface{}, errors.New("bootstrap removal readback failed")
+	}
+	if err := checkRoutes(actual.Index, false, false); err != nil {
+		return net.Interface{}, err
+	}
+	return actual, nil
 }
 
 func noOtherSubnetOverlap(index int, l Lease) error {
@@ -242,7 +341,7 @@ func noOtherSubnetOverlap(index int, l Lease) error {
 	return nil
 }
 
-func checkRoutes(index int) error {
+func checkRoutes(index int, cleanup, recovery bool) error {
 	data, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_INET)
 	if err != nil {
 		return errors.New("routes unavailable")
@@ -251,6 +350,7 @@ func checkRoutes(index int) error {
 	if err != nil {
 		return errors.New("invalid routes")
 	}
+	var remove [][]byte
 	for _, m := range msgs {
 		if m.Header.Type != syscall.RTM_NEWROUTE || len(m.Data) < 12 || m.Data[4] != syscall.RT_TABLE_MAIN {
 			continue
@@ -274,16 +374,21 @@ func checkRoutes(index int) error {
 			}
 			// This metric is exclusively reserved for this agent in its private
 			// namespace. Recover only its previous exact route after a crash.
-			if dev == index && metric == 42760 && m.Data[5] == syscall.RTPROT_STATIC {
-				if err := rtnl(syscall.RTM_DELROUTE, 0, m.Data); err != nil {
-					return err
-				}
+			if recovery && dev == index && metric == 42760 && m.Data[5] == syscall.RTPROT_STATIC {
+				remove = append(remove, m.Data)
 				continue
 			}
 			return errors.New("managed namespace must have no existing default route")
 		}
 		if dev == index && m.Data[5] != syscall.RTPROT_KERNEL {
 			return errors.New("refusing to change a routed LAN interface")
+		}
+	}
+	if cleanup {
+		for _, route := range remove {
+			if err := rtnl(syscall.RTM_DELROUTE, 0, route); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

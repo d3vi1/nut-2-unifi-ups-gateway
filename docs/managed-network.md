@@ -48,6 +48,15 @@ use that address for monitoring, published ports, Docker DNS, or service
 discovery. The controller sees the actual address. This nonstandard behavior,
 including container recreation, is a release gate on the exact Docker version.
 
+Some Engine 24 multi-network deployments also ignore the requested endpoint
+MAC. If that MAC is absent, the helper accepts only one active macvlan with
+exactly the dedicated bootstrap IPv4 address and no unexpected routes/addresses.
+It applies the configured adopted MAC and verifies kernel readback **before**
+removing bootstrap addressing or starting DHCP. Ambiguous links are rejected;
+the host-NUT bridge is never a fallback candidate. Docker's recorded MAC can
+therefore differ from the active MAC too; verify the kernel interface and the
+identity reported to Network, not Docker inspection alone.
+
 The application never creates the host network, changes its parent interface,
 changes firewall rules, or edits DHCP server configuration. Network provisioning
 is a separate operator-controlled step; never reuse the static template's LAN
