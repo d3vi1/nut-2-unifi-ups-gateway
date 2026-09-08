@@ -20,6 +20,7 @@ import (
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/health"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/model"
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/netconfig"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/nut"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/state"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/unifi/discovery"
@@ -54,6 +55,7 @@ type Gateway struct {
 	monitor             *health.Monitor
 	logger              *slog.Logger
 	network             NetworkIdentity
+	networkGeneration   string
 	now                 func() time.Time
 	saveState           func(string, state.State) error
 	started             time.Time
@@ -236,6 +238,14 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 	if err := configuration.Validate(); err != nil {
 		return nil, err
 	}
+	var networkGeneration string
+	if configuration.Runtime.NetworkStatusFile != "" {
+		s, err := netconfig.ReadStatus(configuration.Runtime.NetworkStatusFile, time.Now())
+		if err != nil || s.Address != configuration.Device.IP {
+			return nil, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("managed address is not current"))
+		}
+		networkGeneration = s.Generation
+	}
 	if _, err := inform.ResolveProfile(inform.DeviceProfile{
 		Model:           configuration.UniFi.Model,
 		FirmwareVersion: configuration.UniFi.Version,
@@ -360,6 +370,7 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		monitor:             options.Monitor,
 		logger:              options.Logger,
 		network:             network,
+		networkGeneration:   networkGeneration,
 		now:                 options.Now,
 		saveState:           options.SaveState,
 		saveReceipt:         options.SaveReceipt,
@@ -408,6 +419,9 @@ func (g *Gateway) PollOnce(ctx context.Context) error {
 // TNBU exchange. Controller state is committed only after endpoint-transition
 // authorization and a successful atomic state-file replacement.
 func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
+	if !g.managedNetworkCurrent() {
+		return inform.Outcome{}, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("managed address is not current"))
+	}
 	g.informMu.Lock()
 	defer g.informMu.Unlock()
 
@@ -744,6 +758,9 @@ func (g *Gateway) announcementLoop(ctx context.Context, writer discovery.PacketW
 	ticker := time.NewTicker(g.configuration.UniFi.DiscoveryInterval)
 	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil || !g.managedNetworkCurrent() {
+			return
+		}
 		announcement, err := g.discoveryAnnouncement(discovery.V2, discovery.CommandAnnouncement)
 		if err == nil {
 			var packet []byte
@@ -766,6 +783,14 @@ func (g *Gateway) announcementLoop(ctx context.Context, writer discovery.PacketW
 		case <-ticker.C:
 		}
 	}
+}
+
+func (g *Gateway) managedNetworkCurrent() bool {
+	if g.configuration.Runtime.NetworkStatusFile == "" {
+		return true
+	}
+	s, err := netconfig.ReadStatus(g.configuration.Runtime.NetworkStatusFile, time.Now())
+	return err == nil && s.Address == g.network.DeviceIP && s.Generation == g.networkGeneration
 }
 
 func (g *Gateway) discoveryAnnouncement(version discovery.Version, command uint8) (discovery.Announcement, error) {

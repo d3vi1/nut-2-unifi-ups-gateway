@@ -481,6 +481,8 @@ jobs:
           cp deploy/compose/compose.auth.yaml "$bundle_dir/compose.auth.yaml"
           cp deploy/compose/compose.nut-host.yaml "$bundle_dir/compose.nut-host.yaml"
           cp deploy/compose/compose.legacy.yaml "$bundle_dir/compose.legacy.yaml"
+          cp deploy/compose/compose.managed.yaml "$bundle_dir/compose.managed.yaml"
+          cp deploy/compose/compose.managed-nut-host.yaml "$bundle_dir/compose.managed-nut-host.yaml"
           {
             printf '# Generated for %s; keep the OCI manifest digest pinned.\n' "$N2U_RELEASE_TAG"
             awk -v image="$IMAGE_NAME@$IMAGE_DIGEST" '

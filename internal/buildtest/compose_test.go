@@ -98,3 +98,32 @@ func TestSharedDaemonExampleDoesNotInventMACOrRequirePrivileges(t *testing.T) {
 		}
 	}
 }
+
+func TestManagedComposeConfinesPrivilegesAndSecrets(t *testing.T) {
+	compose := readRepositoryFile(t, "deploy", "compose", "compose.managed.yaml")
+	parts := strings.Split(compose, "\n  gateway:\n")
+	if len(parts) != 2 {
+		t.Fatal("managed service boundaries changed")
+	}
+	agent, gateway := parts[0], parts[1]
+	for _, required := range []string{"entrypoint: [\"/n2u-netagent\"]", "user: \"0:0\"", "cap_drop: [ALL]", "cap_add: [NET_ADMIN, NET_RAW, NET_BIND_SERVICE]", "read_only: true", "security_opt: [\"no-new-privileges:true\"]"} {
+		if !strings.Contains(agent, required) {
+			t.Fatalf("missing agent boundary %q", required)
+		}
+	}
+	for _, forbidden := range []string{"/var/lib/n2u", "N2U_NUT_", "N2U_INFORM_", "/var/run/docker.sock", "privileged:"} {
+		if strings.Contains(agent, forbidden) {
+			t.Fatalf("agent crosses secret/privilege boundary %q", forbidden)
+		}
+	}
+	for _, required := range []string{"network_mode: service:netagent", "user: \"65532:65532\"", "cap_drop: [ALL]", "network_status:/run/n2u-network:ro", "N2U_NETWORK_STATUS_FILE: /run/n2u-network/status.json"} {
+		if !strings.Contains(gateway, required) {
+			t.Fatalf("missing gateway boundary %q", required)
+		}
+	}
+	for _, forbidden := range []string{"cap_add:", "N2U_DEVICE_IP:", "privileged:", "/var/run/docker.sock"} {
+		if strings.Contains(gateway, forbidden) {
+			t.Fatalf("managed gateway crosses boundary %q", forbidden)
+		}
+	}
+}

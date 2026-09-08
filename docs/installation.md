@@ -97,9 +97,11 @@ tar -tzf "$bundle"
 ```
 
 Stop on a failed download/checksum. The archive must contain exactly `.env`,
-`compose.yaml`, `compose.legacy.yaml`, `compose.auth.yaml`, `compose.nut-host.yaml` and
-`RELEASE-METADATA.txt` inside one versioned directory, plus that directory entry
-(six files and one directory entry). If that Release is absent, stop; do not
+`compose.yaml`, `compose.legacy.yaml`, `compose.auth.yaml`, `compose.nut-host.yaml`,
+`compose.managed.yaml`, `compose.managed-nut-host.yaml` and `RELEASE-METADATA.txt`
+inside one versioned directory, plus that directory entry (eight files and one
+directory entry). The managed templates remain candidates until their validation
+gates pass. If that Release is absent, stop; do not
 substitute development files or mix this contract with the `v0.9.0` bundle.
 
 The checksum detects corruption, not compromise of the shared GitHub Release

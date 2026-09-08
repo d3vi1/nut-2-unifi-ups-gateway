@@ -1,0 +1,13 @@
+# Optional overlay for compose.managed.yaml ONLY. This attaches the host-NUT
+# bridge to the namespace owner; the gateway shares that same namespace.
+# The existing bridge MUST be internal (no second default route).
+services:
+  netagent:
+    networks:
+      nut_host:
+        ipv4_address: ${N2U_NUT_HOST_IP:?set the reserved bridge-side NUT client IPv4 address}
+
+networks:
+  nut_host:
+    external: true
+    name: ${N2U_NUT_HOST_NETWORK:?set the existing internal host-NUT bridge name}

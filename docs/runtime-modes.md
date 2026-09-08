@@ -1,5 +1,10 @@
 # Two ways to run the gateway
 
+For optional DHCP/static addressing managed inside the container namespace,
+see [Managed addressing](managed-network.md). It is a separate candidate
+deployment with a privileged network helper, not the static Docker-IPAM setup
+described below.
+
 Choose the role of the Linux machine, not the brand of its NUT driver.
 
 | Mode | Use it when | Identity in Network | NUT on the same machine |

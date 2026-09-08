@@ -5,6 +5,12 @@ All notable changes are documented here. The project follows
 
 ## Unreleased — 0.9.1 candidate
 
+- Candidate managed `separate` addressing: a distinct network agent owns DHCP
+  or static LAN addressing while the UPS process stays non-root/capability-free.
+  Bounded lease parsing, conflict probes, short-lived kernel addresses and a
+  monitored address handoff fail closed. Requires a dedicated bootstrap macvlan
+  network; exact Synology lifecycle acceptance remains a release gate.
+
 - Explicit `shared` native-daemon mode for a Linux UPS appliance and `separate`
   container mode for a NAS/server, both using the real selected interface MAC/IP.
 - Fail-closed local interface and persistent identity checks; source-bound IPv4

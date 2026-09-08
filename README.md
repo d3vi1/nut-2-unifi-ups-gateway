@@ -48,6 +48,12 @@ NAS as a UPS while expecting it to remain an independent Network client.
 For the daemon, start with [Shared mode](docs/runtime-modes.md#shared-native-daemon).
 The container instructions follow below.
 
+**Want the UPS to get its address from DHCP/UniFi?** The new
+[managed-addressing candidate](docs/managed-network.md) adds DHCP or static
+configuration inside a separate network-helper container. The UPS process stays
+non-root; the helper needs limited network privileges. This path is still under
+validation and is not the production quick-start below.
+
 ## What you need for the container
 
 - A working NUT server and the UPS name it serves, often `ups`.

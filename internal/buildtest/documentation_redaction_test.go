@@ -170,17 +170,17 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 	// their exact bytes so every wording change requires an explicit review and
 	// digest update instead of relying on an incomplete natural-language parser.
 	expected := map[string]string{
-		"CHANGELOG.md":                "e327d36eca357537cbeaa1e4ac6fafe70d74c6d58a5efbaecebba724220beb20",
-		"README.md":                   "3e2bcf583709971768437421fafc766021829f6b2316491d7155c8b76ab517dc",
+		"CHANGELOG.md":                "84f96bdddf935cba50cc51f1189e883e18ee225f99525c715d3dd574be4fc5cc",
+		"README.md":                   "599f290591746b0c2e45cedb08d83b3c8aee3f73752b2a27dc7bee9cd45853bc",
 		"SECURITY.md":                 "bc4743a0ffe7e7f09d2815c08051e12c2b30631983f7fe2aa78ac9d2f9a66982",
 		"deploy/compose/.env.example": "1c171e5a571aa1bb7b40021143d45d6c1d7d77aa373c538d05625b851deceedc",
 		"docs/configuration.md":       "ad4a3c7c8bd1797723a1ecab015370bf02d771df9daa47b7ad725a36dd4843f1",
 		"docs/protocol-evidence.md":   "cf20926b280ce8fd4280834a3e06a5e2c529347f2c9de9ca5efb4e8df5059b60",
 		"docs/synology.md":            "ac8c261df8d858152c468e36d54a74afe7e02d488bfcd41f3bca3adf50044b02",
-		"docs/installation.md":        "36f9a16bdd8cd5bfb45c8c9867b21d14e891c877a0f98c06a5e293f348be2360",
+		"docs/installation.md":        "00eff85e4a50303dc3461c3f1c8bb91b7abdf10aa237695d717b3c6b66ea72ae",
 		"docs/compatibility.md":       "a5394a3663025e34caef307fe8569d26596754d8e3eb8e9e5ab9d4aa58db6921",
 		"docs/troubleshooting.md":     "46e594e874b724665f6b3873b161c53d790896afc882080d80fb726c893cdd42",
-		"docs/releasing.md":           "db7c843b37dfe30cd749fb7a41b2233b229b6c036b1995925b25cb1b6b100088",
+		"docs/releasing.md":           "c6fc6b0e38d3fb32bce642a4fe2e0eff139cc5479aafdb2227d901ca8b9e0b6b",
 	}
 	for path, want := range expected {
 		document := readRepositoryFile(t, strings.Split(path, "/")...)

@@ -15,13 +15,15 @@ import (
 )
 
 const (
-	maxReleaseAssetSize   = 128 << 20
-	maxExpandedBundleSize = 4 << 20
-	maxBundleMemberSize   = 1 << 20
-	composeSHA256         = "681ff7915757cb08122ab1416f3312d9f200bfbd3f50d4689c0a8deeac1f6b0d"
-	composeAuthSHA256     = "4514e6f198ce9227fa409e29c8c99b8a1141284456e4adcb2e4a05c286b0ae40"
-	composeNUTHostSHA256  = "2e01f9b55668b6842bc797e4a7b566e92f98d77e9e3350e15523cea086f77d18"
-	composeLegacySHA256   = "5da05c693d8cd5bd9831ea653e023d7b4174166876492ad47182937f5ba849de"
+	composeManagedSHA256        = "4502f9621f955182e28838e68dd278409b8b07cdd820848833f76ef2132849c2"
+	composeManagedNUTHostSHA256 = "e9c2b1f1cfd5709249bc6029969ee2b83a1c9f390831ee3287b92d057460a437"
+	maxReleaseAssetSize         = 128 << 20
+	maxExpandedBundleSize       = 4 << 20
+	maxBundleMemberSize         = 1 << 20
+	composeSHA256               = "681ff7915757cb08122ab1416f3312d9f200bfbd3f50d4689c0a8deeac1f6b0d"
+	composeAuthSHA256           = "4514e6f198ce9227fa409e29c8c99b8a1141284456e4adcb2e4a05c286b0ae40"
+	composeNUTHostSHA256        = "2e01f9b55668b6842bc797e4a7b566e92f98d77e9e3350e15523cea086f77d18"
+	composeLegacySHA256         = "5da05c693d8cd5bd9831ea653e023d7b4174166876492ad47182937f5ba849de"
 )
 
 type localAsset struct {
@@ -122,13 +124,15 @@ func verifyComposeBundle(release Context, binding bindingInput, compressed []byt
 	tarReader := tar.NewReader(limited)
 	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
 	expected := map[string]byte{
-		root + "/":                      tar.TypeDir,
-		root + "/.env":                  tar.TypeReg,
-		root + "/compose.yaml":          tar.TypeReg,
-		root + "/compose.auth.yaml":     tar.TypeReg,
-		root + "/compose.nut-host.yaml": tar.TypeReg,
-		root + "/compose.legacy.yaml":   tar.TypeReg,
-		root + "/RELEASE-METADATA.txt":  tar.TypeReg,
+		root + "/compose.managed.yaml":          tar.TypeReg,
+		root + "/compose.managed-nut-host.yaml": tar.TypeReg,
+		root + "/":                              tar.TypeDir,
+		root + "/.env":                          tar.TypeReg,
+		root + "/compose.yaml":                  tar.TypeReg,
+		root + "/compose.auth.yaml":             tar.TypeReg,
+		root + "/compose.nut-host.yaml":         tar.TypeReg,
+		root + "/compose.legacy.yaml":           tar.TypeReg,
+		root + "/RELEASE-METADATA.txt":          tar.TypeReg,
 	}
 	contents := make(map[string][]byte, len(expected))
 	seen := make(map[string]struct{}, len(expected))
@@ -195,6 +199,12 @@ func verifyComposeBundle(release Context, binding bindingInput, compressed []byt
 		return err
 	}
 	composeDigest := sha256.Sum256(contents[root+"/compose.yaml"])
+	for name, expected := range map[string]string{"compose.managed.yaml": composeManagedSHA256, "compose.managed-nut-host.yaml": composeManagedNUTHostSHA256} {
+		digest := sha256.Sum256(contents[root+"/"+name])
+		if hex.EncodeToString(digest[:]) != expected {
+			return errors.New("managed Compose files do not match the reviewed release templates")
+		}
+	}
 	composeAuthDigest := sha256.Sum256(contents[root+"/compose.auth.yaml"])
 	composeNUTHostDigest := sha256.Sum256(contents[root+"/compose.nut-host.yaml"])
 	composeLegacyDigest := sha256.Sum256(contents[root+"/compose.legacy.yaml"])

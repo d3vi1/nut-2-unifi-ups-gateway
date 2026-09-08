@@ -532,7 +532,9 @@ func testComposeMembers(t *testing.T, release Context, binding bindingInput) map
 	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
 	metadata := fmt.Sprintf("Release tag: %s\nSource commit: %s\nImage: %s@%s\nRetention anchor: %s:%s\nWorkflow run: %d (attempt %d)\n", release.Tag, release.SourceSHA, ImageName, binding.digest, ImageName, release.OCITag(), release.RunID, release.RunAttempt)
 	return map[string]testBundleMember{
-		root + "/": {mode: 0o755, typeflag: tar.TypeDir},
+		root + "/compose.managed.yaml":          {mode: 0o644, typeflag: tar.TypeReg, data: mustReadTestFile(t, "../../deploy/compose/compose.managed.yaml")},
+		root + "/compose.managed-nut-host.yaml": {mode: 0o644, typeflag: tar.TypeReg, data: mustReadTestFile(t, "../../deploy/compose/compose.managed-nut-host.yaml")},
+		root + "/":                              {mode: 0o755, typeflag: tar.TypeDir},
 		root + "/.env": {
 			mode: 0o600, typeflag: tar.TypeReg,
 			data: []byte(expectedBundleEnvironment(release, binding)),
@@ -1022,6 +1024,12 @@ func TestReleaseAssetSymlinkIsRejected(t *testing.T) {
 }
 
 func TestReviewedComposeTemplatesRemainAligned(t *testing.T) {
+	for name, expected := range map[string]string{"compose.managed.yaml": composeManagedSHA256, "compose.managed-nut-host.yaml": composeManagedNUTHostSHA256} {
+		digest := sha256.Sum256(mustReadTestFile(t, "../../deploy/compose/"+name))
+		if hex.EncodeToString(digest[:]) != expected {
+			t.Fatal("managed Compose digest is stale")
+		}
+	}
 	release := loadTestContext(t, validEnvironment())
 	binding := mustTestBinding(t, release)
 	compose := mustReadTestFile(t, "../../deploy/compose/compose.yaml")
