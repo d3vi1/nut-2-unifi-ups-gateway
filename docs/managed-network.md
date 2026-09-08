@@ -4,8 +4,9 @@ This optional `separate` deployment lets the emulated UPS obtain its own LAN
 address from your DHCP server. With a UniFi Gateway, reserve that address for
 the UPS MAC in Network. You do not have to copy the resulting lease into Compose.
 
-**CANDIDATE, not yet accepted for production:** this needs isolated Linux tests,
-an adversarial review, and exact Synology/Network validation before release.
+**CANDIDATE, not yet accepted for production:** isolated Linux tests and an
+adversarial code review have completed, but exact Synology/Network migration
+and full container-recreation validation remain release gates.
 Do not migrate a working installation solely because this template exists.
 
 ## What changes
@@ -13,9 +14,17 @@ Do not migrate a working installation solely because this template exists.
 The UPS gateway remains a static, non-root Go program with no capabilities and
 no power-command path. A separate `netagent` container configures its LAN
 interface using Go and Linux system calls. That helper runs as root with only
-`NET_ADMIN`, `NET_RAW`, and `NET_BIND_SERVICE`; it has neither adoption-state
-mounts nor NUT credentials. The two containers share a network namespace, not
-credentials or a writable root filesystem. Neither gets the Docker socket.
+`NET_ADMIN`, `NET_RAW`, and `NET_BIND_SERVICE`. It receives no adoption-state
+mount or NUT credential file/environment variable. However, the shared network
+namespace lets it observe plaintext NUT traffic, including credentials if used.
+The helper is trusted network infrastructure, not a confidentiality boundary
+against the gateway. Neither container gets the Docker socket.
+
+DHCP and ARP do not authenticate their peers. Use a trusted, controlled LAN:
+transaction and MAC checks reject unrelated replies, not an on-link attacker
+who observes them. A rogue DHCP server can redirect off-subnet traffic or deny
+service. Static addressing avoids DHCP server selection but does not prevent
+ARP spoofing. The gateway's plaintext-NUT opt-in remains required for remote NUT.
 
 The helper supplies a short-lived address heartbeat. The gateway validates the
 real interface and its saved MAC, then uses that address for discovery/INFORM.
@@ -98,6 +107,14 @@ container identity. Compose startup ordering does not provide runtime health
 coupling; the gateway's own heartbeat guard supplies fail-closed behavior.
 
 ## Required validation before promotion
+
+At code revision `e24c5ea`, CI built all four architectures and the isolated
+Synology lab passed acquisition, unicast renewal, broadcast rebinding, expiry,
+static configuration, logical helper restart and frozen-helper address expiry.
+The lab had no production LAN, upstream NUT or controller access. A logical
+helper restart is **not** proof of Docker service recreation or retained pairings.
+The exact-code adversarial review produced no confirmed vulnerabilities; that
+is not a guarantee of production readiness.
 
 - Synthetic DHCP: discover/offer/request/ACK, T1 renewal, T2 rebinding, NAK,
   loss of server, expiry, invalid options and conflicts; no production LAN.

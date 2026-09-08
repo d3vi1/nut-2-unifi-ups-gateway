@@ -48,7 +48,13 @@ network without transport encryption; it is not suitable for an untrusted LAN.
 | `N2U_DEVICE_MAC` | mode-dependent | `shared`: observed interface MAC, optional explicit assertion; `separate`: required stable six-byte nonzero unicast MAC |
 | `N2U_DEVICE_SERIAL` | derived | stable non-empty identifier |
 | `N2U_DEVICE_HOSTNAME` | `nut-2-unifi-ups-gateway` | 1–63 characters |
-| `N2U_DEVICE_IP` | required at startup | Real local IPv4 on exactly one active broadcast Ethernet interface; valid /1–/30 subnet |
+| `N2U_DEVICE_IP` | required unless managed addressing is enabled | Real local IPv4 on exactly one active broadcast Ethernet interface; valid /1–/30 subnet; must be unset with the managed helper |
+| `N2U_NETWORK_STATUS_FILE` | unset | Managed `separate` deployment only: exactly `/run/n2u-network/status.json`; set by its Compose template, not a user-supplied permanent lease |
+
+For DHCP/static helper settings (`N2U_NET_MODE`, `N2U_NET_STATIC_CIDR`,
+`N2U_NET_ROUTER`), use the [managed-addressing guide](managed-network.md).
+They configure the helper, not the gateway. Managed addressing currently requires
+literal IPv4 NUT and controller targets; it does not consume DHCP DNS settings.
 
 Both modes obtain IP, mask and MAC from one real local interface before loading
 or creating state. No random MAC or nonlocal-IP fallback is used by the gateway.

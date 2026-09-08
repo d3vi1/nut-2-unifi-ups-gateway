@@ -38,11 +38,17 @@ internal bridge for host NUT access, without another default route. NUT remains
 independent from the controller transport. See [runtime modes](runtime-modes.md)
 and [deployment limits](compatibility.md).
 
-Neither mode requires root: NUT uses TCP/3493, discovery uses
-UDP/10001, and the health endpoint uses TCP/9199. The supplied Compose
-deployment drops all capabilities, and the process never binds a privileged
-port. The identity-free health server also limits aggregate accepted
-connections in addition to per-request timeouts.
+The gateway process requires no root privileges in either mode: NUT normally
+uses TCP/3493, discovery uses UDP/10001, and health uses TCP/9199. The gateway
+service drops all capabilities and never binds a privileged port. Its
+identity-free health server limits aggregate connections and request duration.
+
+The optional [managed-addressing candidate](managed-network.md) adds a root
+network helper with `NET_ADMIN`, `NET_RAW`, and `NET_BIND_SERVICE`. It configures
+only the selected container LAN interface and publishes a short-lived address
+heartbeat to the non-root gateway. Separate credential mounts do not isolate
+shared network traffic: the helper can observe plaintext NUT traffic. It is part
+of the trusted network boundary; it receives no Docker socket or gateway state.
 
 ## Outlet-topology projection
 

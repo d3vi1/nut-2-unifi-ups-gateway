@@ -14,10 +14,13 @@ Choose the role of the Linux machine, not the brand of its NUT driver.
 
 The runtime defaults to `separate`. The operator makes the role decision: the
 program cannot tell whether a machine is physically a UPS, or discover every
-other device or NAT rule on the LAN. Neither mode edits interfaces, ARP, routing,
-firewalls or NUT configuration. Both are read-only NUT clients, not NUT servers.
+other device or NAT rule on the LAN. The native daemon and static Docker-IPAM
+deployments below do not edit interfaces, ARP, routing, firewalls or NUT
+configuration. The optional managed helper configures only its container LAN
+interface. All variants are read-only NUT clients, not NUT servers.
 
-In either mode, set `N2U_DEVICE_IP` to an actual local IPv4 address. It must belong
+For the deployments below, set `N2U_DEVICE_IP` to an actual local IPv4 address.
+Managed addressing supplies it through the helper instead. The address must belong
 to exactly one up, non-loopback Ethernet interface with a nonzero unicast MAC
 and a valid broadcast subnet (/1 through /30). The observed MAC is used for
 INFORM, discovery and persistent identity. There is no randomly invented gateway
@@ -86,8 +89,9 @@ inside INFORM is not the supplied direct-LAN deployment.
 The normal base is `compose.yaml`. The Engine 24 / Compose 2.20.x alternative is
 `compose.legacy.yaml`; choose **one**, never merge them. Add `compose.nut-host.yaml`
 only for the documented internal-bridge path to same-host NUT. It does not enable
-downstream NUT advertisement or proxy the server. No runtime shell, extra daemon,
-Docker socket, raw-packet privilege or networking capability is introduced.
+downstream NUT advertisement or proxy the server. These static templates add no
+runtime shell, extra daemon, Docker socket, raw-packet privilege or networking
+capability; the managed-addressing helper is a separate opt-in deployment.
 
 ## Existing identity and mode changes
 

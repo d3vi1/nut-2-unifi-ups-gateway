@@ -4,6 +4,12 @@ A DiskStation is a NAS, not the UPS appliance itself. Use `separate` mode so
 the NAS keeps its existing LAN identity and the gateway gets its own IP/MAC.
 Do not use `shared` on DSM to work around container networking.
 
+This page describes the static Docker-IPAM templates. For DHCP or static
+addressing owned by a separate network helper, see the
+[managed-addressing candidate](managed-network.md). Do not mix its base or
+host-NUT overlay with the templates below. Isolated tests on Synology passed;
+real LAN migration and complete two-service recreation are still release gates.
+
 ## Choose the compatible template
 
 Check the versions supplied by Container Manager:
