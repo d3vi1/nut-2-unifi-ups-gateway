@@ -165,9 +165,13 @@ docker network create --driver bridge --internal \
 ```
 
 `--internal` is required. It permits appropriately configured host services at
-the bridge gateway without adding a default route from this network; the LAN
-interface remains the external path. Docker performs its own network setup
-during this explicit administrator action.
+the bridge gateway, but do not infer the container's default route from this
+flag alone: an Engine 24 managed deployment was observed to receive an auxiliary
+default anyway. Verify the actual route table and LAN MAC before acceptance.
+The static gateway does not repair routes or MAC placement; the optional
+[managed helper](managed-network.md#nut-on-the-same-nas) handles only its strictly
+validated, explicitly declared auxiliary default. Docker performs its own network
+setup during this administrator action.
 [Docker internal-network behavior](https://docs.docker.com/reference/cli/docker/network/create/#network-internal-mode---internal).
 
 Set matching values in the private `.env`:
@@ -320,9 +324,11 @@ or delete state merely to clear a UI symptom. Exact-build live migration remains
 
 ## Update
 
-Include `compose.legacy.yaml` and `compose.nut-host.yaml` from the same bundle in
-the protected deployment set. Keep the same selected base and overlays for
-validation, pull, startup and rollback.
+Keep the complete version-matched bundle in the protected deployment set,
+including the managed templates if used. Keep the same selected base and overlays
+for validation, pull, startup and rollback. Managed installations must follow
+[two-service update and recovery](managed-network.md#start-update-and-recover),
+not the single-service commands below.
 
 Keep `compose.yaml`, `compose.auth.yaml`, `compose.nut-host.yaml`,
 `compose.legacy.yaml`,
@@ -354,6 +360,10 @@ reuses the existing named state volume even from a different deployment folder.
 Verify health, actual gateway version and Network state before accepting the update.
 
 ## Roll back
+
+For managed addressing, follow [two-service recovery](managed-network.md#start-update-and-recover)
+and stop both services before restoring the prior deployment. The commands below
+describe static deployments; do not leave a managed helper running alongside one.
 
 Restore the complete protected prior deployment set: `compose.yaml`,
 `compose.auth.yaml`, `compose.legacy.yaml` and `compose.nut-host.yaml` when that prior version included them,

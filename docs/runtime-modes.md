@@ -106,6 +106,9 @@ intentional, separately planned adoption migration. Never delete state as a
 routine workaround. Preserving state avoids an automatic identity reset, but
 does not itself prove Network accepts the new IP or preserves every pairing.
 
-Both new deployment modes remain **CANDIDATE** for exact-host/controller
-interoperability until the operator verifies Online state, telemetry, expected
-NAS visibility, topology and pairings. Physical shutdown remains a separate test.
+Managed `separate` DHCP migration and recreation have been **OBSERVED** on one
+Synology deployment, with Online state and retained pairings confirmed by its
+operator. Native `shared`, the static Docker-IPAM templates and other host
+combinations remain **CANDIDATE** for field acceptance. Validate Online state,
+telemetry, separate host visibility, topology and pairings on your setup.
+Physical shutdown remains a separate test.

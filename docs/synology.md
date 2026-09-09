@@ -7,8 +7,10 @@ Do not use `shared` on DSM to work around container networking.
 This page describes the static Docker-IPAM templates. For DHCP or static
 addressing owned by a separate network helper, see the
 [managed-addressing candidate](managed-network.md). Do not mix its base or
-host-NUT overlay with the templates below. Isolated tests on Synology passed;
-real LAN migration and complete two-service recreation are still release gates.
+host-NUT overlay with the templates below. The managed DHCP path has an observed
+Synology migration and full two-service recreation, with Online state and
+pairings confirmed by the operator. This does not validate the static templates
+below or every DSM version; see [the evidence boundary](compatibility.md).
 
 ## Choose the compatible template
 
@@ -34,6 +36,15 @@ priority. Priority does not select a default route or guarantee an `eth0` name.
 Both bases have the same runtime, state volume and hardening. Per-network MACs
 are preferred on newer engines; see
 [Docker's Compose reference](https://docs.docker.com/reference/compose-file/services/#mac_address).
+
+**Engine 24 / Compose 2.20.x with two networks:** service-level MAC placement was
+observed to be ignored when the LAN and host-NUT bridge were both attached.
+The static legacy template cannot repair that; the gateway rejects a mismatch
+instead of announcing the wrong identity. Do not assume `priority` solves it.
+For same-host NUT on that combination, use the separately validated
+[managed helper path](managed-network.md), or validate a newer engine/template
+in an agreed maintenance window. Do not upgrade DSM or add gateway privileges
+solely to bypass the identity check.
 
 ## Prepare and migrate
 
@@ -73,7 +84,8 @@ server cannot be reached by this arrangement. Do not silently change DSM UPS
 files, firewall rules or service bindings; stop and review an administrator-owned
 NUT access plan if these prerequisites are absent.
 
-For the older compatible base:
+For a static deployment whose real endpoint MAC and routes have been independently
+verified (the legacy two-network limitation above still applies):
 
 ```sh
 docker compose --env-file .env -f compose.legacy.yaml -f compose.nut-host.yaml config --quiet

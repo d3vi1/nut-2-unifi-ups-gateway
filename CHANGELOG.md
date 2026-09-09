@@ -9,7 +9,9 @@ All notable changes are documented here. The project follows
   or static LAN addressing while the UPS process stays non-root/capability-free.
   Bounded lease parsing, conflict probes, short-lived kernel addresses and a
   monitored address handoff fail closed. Requires a dedicated bootstrap macvlan
-  network; exact Synology lifecycle acceptance remains a release gate.
+  network. One Synology DHCP migration and full two-service recreation were
+  observed, with Online state and retained pairings confirmed by the operator;
+  other hosts and physical shutdown remain separate validation.
 
 - Explicit `shared` native-daemon mode for a Linux UPS appliance and `separate`
   container mode for a NAS/server, both using the real selected interface MAC/IP.
@@ -18,8 +20,12 @@ All notable changes are documented here. The project follows
 - Dedicated-LAN Compose deployment, optional internal bridge for host NUT, and
   an alternate base for Engine 24 / Compose 2.20.x. Existing state is preserved;
   changing the deployed network remains an operator-controlled migration.
-- Native systemd examples and migration guidance. Both modes remain CANDIDATE
-  for exact-host/controller acceptance; no new power-control capability.
+- Native systemd examples and migration guidance. Native shared mode and static
+  Docker-IPAM deployments remain CANDIDATE for field acceptance; no new
+  power-control capability.
+- Narrow Engine 24 compatibility for ignored multi-network MAC placement and
+  an explicitly declared auxiliary default, with kernel readback and fail-closed
+  validation before route/address mutation. The gateway's privileges stay unchanged.
 
 ## 0.9.0 - 2026-09-05
 

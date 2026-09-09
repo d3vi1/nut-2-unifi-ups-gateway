@@ -3,10 +3,11 @@
 This page is for maintainers, not installation. Users should follow
 [Install and maintain](installation.md).
 
-## Acceptance before 0.9.0
+## Acceptance before each release
 
-Keep the repository private until the operator explicitly accepts the release
-candidate. Passing CI or a clean security review does not grant that approval.
+Obtain operator acceptance of the exact release candidate. The repository is
+already public; a new release does not require changing its visibility again.
+Passing CI or a clean security review does not grant release approval.
 
 1. Freeze the exact source commit and run the complete test gate, four-platform
    container builds, and a fresh adversarial review of that exact change.
@@ -16,8 +17,9 @@ candidate. Passing CI or a clean security review does not grant that approval.
    [Compatibility](compatibility.md#operator-controlled-checks). Keep health,
    Network acceptance and physical shutdown evidence separate. Do not restart
    infrastructure or run power tests as part of an automated release check.
-4. Obtain explicit GO for release and public visibility. If required repository
-   policies cannot be enabled while private, stop for that separate decision;
+4. Obtain explicit GO for release, and for public visibility if it would change.
+   If required repository policies cannot be enabled while private, stop for
+   that separate decision;
    never weaken or bypass the release controller to make it pass.
 
 Only after that approval, perform the policy setup below. A token stored as an
@@ -54,11 +56,11 @@ the release controller:
    workflow, or package ACL has release authority.
 
 Run **Publish container** manually from `main` and provide the exact SemVer tag,
-such as `v0.9.0`. The controller first reserves the version with a protected
+such as `v0.9.1`. The controller first reserves the version with a protected
 tag, creates its owned draft, publishes a uniquely named permanent OCI
 retention anchor, binds its digest and attestation to the numeric reservation,
 uploads an exact asset set, and only then publishes the immutable Release. It
-never publishes a `:0.9.0` image alias.
+never publishes a SemVer image alias such as `:0.9.1`.
 
 The read-only preflight checks policy, source and tag absence, not private-draft
 absence. The reservation job definitively checks draft absence with its writer

@@ -51,8 +51,10 @@ The container instructions follow below.
 **Want the UPS to get its address from DHCP/UniFi?** The new
 [managed-addressing candidate](docs/managed-network.md) adds DHCP or static
 configuration inside a separate network-helper container. The UPS process stays
-non-root; the helper needs limited network privileges. This path is still under
-validation and is not the production quick-start below.
+non-root; the helper needs limited network privileges. DHCP migration and full
+container recreation were observed on one Synology deployment, with Online state
+and pairings confirmed by its operator. Other hosts still need validation; the
+quick-start below describes the separate Docker-managed static alternative.
 
 ## What you need for the container
 
@@ -78,7 +80,7 @@ See [tested compatibility and limitations](docs/compatibility.md).
 ### 1. Download the deployment files
 
 This source tree documents the **0.9.1 dedicated-network deployment**. It does
-not establish that its release is published or that a live migration has passed.
+not establish release publication or compatibility with your host.
 The immutable `v0.9.0` bundle uses its own versioned instructions; do not mix it
 with these templates. Existing users: read the
 [migration procedure](docs/installation.md#migrate-from-host-networking) first.
@@ -94,7 +96,7 @@ sha256sum -c nut-2-unifi-ups-gateway-v0.9.1-compose.SHA256SUMS
 tar -tzf nut-2-unifi-ups-gateway-v0.9.1-compose.tar.gz
 ```
 
-Continue only after checksum `OK` and the expected six files in one versioned
+Continue only after checksum `OK` and the expected eight files in one versioned
 directory; see [download verification](docs/installation.md#download-and-verify).
 Then extract into the empty folder:
 
@@ -149,6 +151,8 @@ If using a password, add `-f compose.auth.yaml` to every Compose command below.
 For same-host NUT, also add `-f compose.nut-host.yaml`.
 On the older Compose/Engine combination, replace `-f compose.yaml` with
 `-f compose.legacy.yaml` in every command; never combine the two base files.
+For same-host NUT on Engine 24 / Compose 2.20.x, read the
+[two-network limitation](docs/synology.md#choose-the-compatible-template) first.
 
 ```sh
 docker compose --env-file .env -f compose.yaml config --quiet

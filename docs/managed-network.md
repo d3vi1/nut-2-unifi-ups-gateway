@@ -4,10 +4,11 @@ This optional `separate` deployment lets the emulated UPS obtain its own LAN
 address from your DHCP server. With a UniFi Gateway, reserve that address for
 the UPS MAC in Network. You do not have to copy the resulting lease into Compose.
 
-**CANDIDATE, not yet accepted for production:** isolated Linux tests and an
-adversarial code review have completed, but exact Synology/Network migration
-and full container-recreation validation remain release gates.
-Do not migrate a working installation solely because this template exists.
+**Experimental, with one observed deployment:** a Synology amd64 installation
+on Engine 24 / Compose 2.20.x completed DHCP migration and full two-service
+recreation while retaining its adopted identity. The operator confirmed Online
+state and both existing pairings. This is not general host compatibility or
+proof of shutdown; keep the existing NUT protection and validate your own setup.
 
 ## What changes
 
@@ -61,6 +62,18 @@ The application never creates the host network, changes its parent interface,
 changes firewall rules, or edits DHCP server configuration. Network provisioning
 is a separate operator-controlled step; never reuse the static template's LAN
 network. Do not use host networking or `privileged: true`.
+
+After checking the existing LAN parent and Docker subnets, an administrator can
+provision the dedicated bootstrap network (replace `eth0` with the actual parent):
+
+```sh
+docker network create --driver macvlan --internal \
+  --subnet 169.254.254.0/24 --opt parent=eth0 n2u-managed-lan
+```
+
+The bootstrap subnet is part of the helper's contract, not your production LAN
+subnet. Do not enable IPv6 on this Docker network. Verify that the real LAN
+permits multiple MACs and that DHCP serves the intended management network.
 
 ## Configuration
 
@@ -124,7 +137,49 @@ Recreate the two services together when changing networks or the helper's
 container identity. Compose startup ordering does not provide runtime health
 coupling; the gateway's own heartbeat guard supplies fail-closed behavior.
 
+## Start, update and recover
+
+Use the verified version-matched release bundle and retain its image digest.
+Keep the same base and overlays in every command. For same-host NUT:
+
+```sh
+docker compose --env-file .env -f compose.managed.yaml -f compose.managed-nut-host.yaml config --quiet
+docker compose --env-file .env -f compose.managed.yaml -f compose.managed-nut-host.yaml pull
+docker compose --env-file .env -f compose.managed.yaml -f compose.managed-nut-host.yaml up -d
+docker compose --env-file .env -f compose.managed.yaml -f compose.managed-nut-host.yaml ps
+docker compose --env-file .env -f compose.managed.yaml -f compose.managed-nut-host.yaml exec -T gateway /nut-2-unifi-ups-gateway healthcheck
+```
+
+For remote NUT, omit the host overlay. For authenticated NUT, add
+`-f compose.auth.yaml`; the secret is mounted only into the gateway. See the
+[password-file instructions](installation.md#authenticated-nut).
+
+For a planned update that recreates the network owner, first back up the stopped
+gateway's state and private configuration. Stop `gateway` and `netagent` using
+the same file combination, then run `up -d --force-recreate` for both services.
+Do not recreate only `netagent`: the old gateway container may retain its former
+network namespace. Do not run the old and new deployments concurrently.
+Preserve the project name and named state volume; never use `down --volumes`.
+
+Allow time for startup, DHCP and conflict probes. Check process health, fresh
+NUT telemetry, the actual LAN address in Network, separate host/UPS identities,
+Online state and pairings. The healthcheck alone proves only process health.
+If setup fails, stop both services and restore the complete prior private
+deployment set with the same state volume; do not reset adoption. A rollback to
+0.9.0 also restores its old shared-IP limitation, so it is recovery, not a fix
+for that identity conflict.
+
 ## Required validation before promotion
+
+The later production-code revision `486800c` added narrow Engine 24 MAC and
+auxiliary-default compatibility handling. The target deployment subsequently
+passed DHCP migration and full two-service recreation, and its operator
+confirmed Online state and retained pairings. The `c68625b` test-only follow-up
+passed CI including the isolated Linux network lab and four-platform builds.
+The deployed local candidate is not a published, attested GHCR release image.
+No controller DHCP reservation or physical shutdown test was performed by these
+checks. Static mode, other hosts and broader failure scenarios remain separate
+validation work.
 
 At code revision `e24c5ea`, CI built all four architectures and the isolated
 Synology lab passed acquisition, unicast renewal, broadcast rebinding, expiry,
@@ -139,8 +194,9 @@ is not a guarantee of production readiness.
 - Helper kill/restart and complete stack recreation; no stale advertisement,
   accidental IP reuse, lost adoption state or changed MAC.
 - Static addressing and optional host-NUT bridge preserve other interfaces.
-- Actual Synology lease, UDM reservation, adoption, pairings and topology,
-  including rollback to the previous image/configuration with the same state.
+- Your host's actual lease, identity, adoption, pairings and topology, including
+  rollback with the same state. A DHCP reservation is optional and must be
+  configured and checked separately by the network administrator.
 - Exact-patch Daybreak/security review, documentation review, race/vet tests,
   four architecture builds, then the separately gated 0.9.1 publication.
 

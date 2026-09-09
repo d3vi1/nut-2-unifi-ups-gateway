@@ -34,7 +34,9 @@ controller IPv4; URL authority and TLS verification remain intact. UDP discovery
 binds that same source. The runtime does not provision or certify host networking.
 
 Shared mode can use host-loopback NUT. Separate mode may attach an optional
-internal bridge for host NUT access, without another default route. NUT remains
+internal bridge for host NUT access; the LAN must remain the intended external
+path. Docker route behavior requires readback, and only the optional managed
+helper can remove its explicitly validated auxiliary default. NUT remains
 independent from the controller transport. See [runtime modes](runtime-modes.md)
 and [deployment limits](compatibility.md).
 

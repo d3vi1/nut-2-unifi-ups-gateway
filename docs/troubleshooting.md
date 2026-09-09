@@ -15,6 +15,11 @@ Compose/Engine combination substitute `compose.legacy.yaml` for the base file.
 Container loopback is not host loopback; `/readyz` and metrics are private to
 that network namespace unless the operator deliberately changes the listener.
 For the native `shared` daemon, localhost health URLs refer to the Linux host.
+For managed addressing, use `compose.managed.yaml` and, when needed,
+`compose.managed-nut-host.yaml` instead of those static templates. Inspect the
+fixed-reason logs of both `gateway` and `netagent`; Docker's bootstrap IP/MAC
+is not the active LAN identity. Follow [managed recovery](managed-network.md#start-update-and-recover)
+if recreating services, preserving the original state volume.
 Commands run on the gateway host. Never post `.env`, state files, passwords,
 unfiltered `upsc`, controller replies or packet captures. Even when gateway log
 messages are identity-free, Docker prefixes and host diagnostics may not be.

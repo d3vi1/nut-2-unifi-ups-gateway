@@ -8,7 +8,8 @@ Missing values are omitted, never manufactured to make Network look complete.
 
 | Behavior | Evidence and boundary |
 |---|---|
-| 0.9.1 `shared` daemon and `separate` dedicated-IP container | **CANDIDATE** live interoperability; local identity, persistence and bound-transport tests are separate from field acceptance |
+| 0.9.1 managed `separate` DHCP container | **OBSERVED** on one Synology amd64 / Engine 24 / Compose 2.20.x deployment: distinct LAN identity, fresh NUT, full two-service recreation; operator confirmed Online and retained pairings |
+| 0.9.1 native `shared`, Docker-IPAM static templates and other managed hosts | **CANDIDATE** live interoperability; automated coverage does not establish field acceptance |
 | NUT telemetry, adoption and Safe Shutdown Pairing | **OBSERVED** with the USWDA26 carrier on Network 10.6.102 / UniFi OS 5.1.31, using a Synology-hosted amd64 container |
 | Multi-field configuration reconciliation | **OBSERVED** backend acceptance; an operator also observed Online and pairings after the corrected memory-mode parser |
 | Configuration receipt across process restart and container recreation | **OBSERVED** private-file restoration and healthy informs; not proof of all subsequent UI operations |
@@ -28,8 +29,9 @@ See [protocol evidence](protocol-evidence.md) for the detailed source boundaries
 The image is built for Linux amd64, arm64, arm/v7 and 386. Cross-build success
 does not mean every architecture/host combination has been tested in the field.
 The 0.9.0 field observation used host networking with a separate emulated MAC;
-it does not validate the new network identity modes. 0.9.1 container templates
-target rootful Docker on Linux with a dedicated macvlan interface. The native
+it does not validate the new network identity modes. The later managed DHCP
+observation above covers only its exact tested host configuration. 0.9.1 container
+templates target rootful Docker on Linux with a dedicated macvlan interface. The native
 daemon targets a Linux appliance intentionally represented as the UPS itself.
 
 A non-root process is not a rootless Docker engine. Docker Desktop, user-namespace
@@ -39,6 +41,8 @@ fix adoption. [Docker's platform limitations](https://docs.docker.com/engine/net
 The canonical Compose file needs 2.23.2 or newer. Engine 24 with Compose 2.20.x
 has a version-specific alternate base. Configuration parsing is not proof of
 MAC assignment, bridge/NUT access, discovery, or controller acceptance.
+In particular, the legacy service-level MAC can be ignored with two attached
+networks; see [the Synology limitation](synology.md#choose-the-compatible-template).
 
 ## Panel limitations
 

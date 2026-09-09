@@ -170,17 +170,17 @@ func TestVolatileCfgVersionEvidenceSurfacesAreReviewLocked(t *testing.T) {
 	// their exact bytes so every wording change requires an explicit review and
 	// digest update instead of relying on an incomplete natural-language parser.
 	expected := map[string]string{
-		"CHANGELOG.md":                "84f96bdddf935cba50cc51f1189e883e18ee225f99525c715d3dd574be4fc5cc",
-		"README.md":                   "599f290591746b0c2e45cedb08d83b3c8aee3f73752b2a27dc7bee9cd45853bc",
+		"CHANGELOG.md":                "fbce9e5219eb2c7c9762309e1014c28c4bd76c9923998177d5cdc8d14827ca6c",
+		"README.md":                   "df96786beeca9ce6df5716ade1887f914cc9e428764da35d336eb9b11ecc781b",
 		"SECURITY.md":                 "88440c8f0f00b072540c4cbf988173d9b0870f86c4408e0c4d9275d8969ee112",
 		"deploy/compose/.env.example": "dd80fe8513e58e842225c459577691a2707f2fc0ae3dfa0e9265e2cdc63ee865",
 		"docs/configuration.md":       "50d5763107607a901f488446eb666f24e6e4cf46c3bfbdc671efefc8990beb52",
 		"docs/protocol-evidence.md":   "cf20926b280ce8fd4280834a3e06a5e2c529347f2c9de9ca5efb4e8df5059b60",
-		"docs/synology.md":            "6364b559257da2dd157bbf9259673e4a0203f5652b283ff8f8e66a388b63a318",
-		"docs/installation.md":        "00eff85e4a50303dc3461c3f1c8bb91b7abdf10aa237695d717b3c6b66ea72ae",
-		"docs/compatibility.md":       "a5394a3663025e34caef307fe8569d26596754d8e3eb8e9e5ab9d4aa58db6921",
-		"docs/troubleshooting.md":     "46e594e874b724665f6b3873b161c53d790896afc882080d80fb726c893cdd42",
-		"docs/releasing.md":           "c6fc6b0e38d3fb32bce642a4fe2e0eff139cc5479aafdb2227d901ca8b9e0b6b",
+		"docs/synology.md":            "25bcc3cfe70af7c433852f1f2378f774afda70fa2420f547d36e0e82946f15f5",
+		"docs/installation.md":        "a669fd600cb7c0e161691ef368357a45d97bf40cbd31e5b6ff2469a893586d4f",
+		"docs/compatibility.md":       "81090a0dcb019e698e4e76d892bc8d027ca9c2d7e771c335675bbd09763d1a0e",
+		"docs/troubleshooting.md":     "caf96103d4cf3d464e02b1d7b9262d46cbafee18d69ce70b9614449c730fc01d",
+		"docs/releasing.md":           "4b90a1cce02deb1ab0321d5a5bb1930d36dcb15ff0607d2e250c723b951fcc76",
 	}
 	for path, want := range expected {
 		document := readRepositoryFile(t, strings.Split(path, "/")...)
