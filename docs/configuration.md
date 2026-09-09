@@ -32,6 +32,7 @@ network without transport encryption; it is not suitable for an untrusted LAN.
 
 | Variable | Default | Validation |
 |---|---|---|
+| `N2U_NETWORK_MODE` | `separate` | `shared` daemon or `separate` container; no automatic mode selection |
 | `N2U_UNIFI_MODEL` | `USWDA26` | Controller-recognized UPS carrier: `USWDA26` or `USPDA2C` |
 | `N2U_UNIFI_VERSION` | `1.6.1` | `1.6.1` or the exact selected build (`1.6.1.413`/`1.6.1.4933`) |
 | `N2U_INFORM_URL` | `http://unifi:8080/inform` | HTTP(S), `/inform`, no credentials/query/fragment |
@@ -44,10 +45,26 @@ network without transport encryption; it is not suitable for an untrusted LAN.
 | `N2U_UNIFI_NUT_SERVER_ENABLED` | `false` | Explicit experimental advertisement only |
 | `N2U_UNIFI_NUT_SERVER_ID` | `ups` | Served NUT UPS name, 1–31 token characters when enabled |
 | `N2U_UNIFI_NUT_SERVER_PORT` | `3493` | 1–65535 |
-| `N2U_DEVICE_MAC` | generated | six-byte unicast MAC |
+| `N2U_DEVICE_MAC` | mode-dependent | `shared`: observed interface MAC, optional explicit assertion; `separate`: required stable six-byte nonzero unicast MAC |
 | `N2U_DEVICE_SERIAL` | derived | stable non-empty identifier |
 | `N2U_DEVICE_HOSTNAME` | `nut-2-unifi-ups-gateway` | 1–63 characters |
-| `N2U_DEVICE_IP` | route-derived | IPv4 only |
+| `N2U_DEVICE_IP` | required unless managed addressing is enabled | Real local IPv4 on exactly one active broadcast Ethernet interface; valid /1–/30 subnet; must be unset with the managed helper |
+| `N2U_NETWORK_STATUS_FILE` | unset | Managed `separate` deployment only: exactly `/run/n2u-network/status.json`; set by its Compose template, not a user-supplied permanent lease |
+
+For DHCP/static helper settings (`N2U_NET_MODE`, `N2U_NET_STATIC_CIDR`,
+`N2U_NET_ROUTER`), use the [managed-addressing guide](managed-network.md).
+They configure the helper, not the gateway. Managed addressing currently requires
+literal IPv4 NUT and controller targets; it does not consume DHCP DNS settings.
+
+Both modes obtain IP, mask and MAC from one real local interface before loading
+or creating state. No random MAC or nonlocal-IP fallback is used by the gateway.
+A configured or persisted MAC mismatch stops startup, without resetting adoption.
+Mode selection declares the deployment role; it cannot prove that the host is a
+dedicated UPS or detect arbitrary external NAT. See [runtime modes](runtime-modes.md).
+The controller's IPv4 is resolved once from the effective saved origin at startup.
+HTTP binds the device IPv4 and dials that controller IPv4 while preserving the
+original Host and TLS hostname verification. Restart after legitimate controller
+DNS/address changes. Discovery binds the same device IPv4; NUT routing is separate.
 
 Set the final controller origin before first startup. Adoption may update the
 path/configuration at that exact origin, but hostname, address, scheme, and port

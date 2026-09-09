@@ -23,21 +23,34 @@ configuration and reported-version receipts use separate private files in the
 same volume. All are instance-specific; no two gateways may share that directory.
 Neither receipt changes the source protocol profile or grants command authority.
 
-## Why host networking on Linux
+## Explicit network identity
 
-UniFi discovery uses IPv4 UDP broadcast and a route-selected source interface.
-Host networking lets the process use that interface and reach a same-host NUT
-server on loopback. This also suits Synology's address-restricted local `upsd`;
-a bridge container would have a different source address and loopback namespace.
-Remote NUT remains supported through an explicit trusted-network opt-in.
-Non-root process execution does not establish rootless-engine or Docker Desktop
-network compatibility; see [the deployment limits](compatibility.md).
+`shared` runs as a native daemon on a Linux UPS appliance and uses that host's
+real IP/MAC. `separate` runs in a container with its own direct-LAN IP/MAC on a
+multi-purpose host. Both validate the actual selected interface before state
+creation and compare its MAC with persistent adoption identity. No fake MAC or
+route-guessed device IP remains. HTTP uses a bound source IPv4 and the startup
+controller IPv4; URL authority and TLS verification remain intact. UDP discovery
+binds that same source. The runtime does not provision or certify host networking.
 
-Host networking does not require root here: NUT uses TCP/3493, discovery uses
-UDP/10001, and the health endpoint uses TCP/9199. The supplied Compose
-deployment drops all capabilities, and the process never binds a privileged
-port. The identity-free health server also limits aggregate accepted
-connections in addition to per-request timeouts.
+Shared mode can use host-loopback NUT. Separate mode may attach an optional
+internal bridge for host NUT access; the LAN must remain the intended external
+path. Docker route behavior requires readback, and only the optional managed
+helper can remove its explicitly validated auxiliary default. NUT remains
+independent from the controller transport. See [runtime modes](runtime-modes.md)
+and [deployment limits](compatibility.md).
+
+The gateway process requires no root privileges in either mode: NUT normally
+uses TCP/3493, discovery uses UDP/10001, and health uses TCP/9199. The gateway
+service drops all capabilities and never binds a privileged port. Its
+identity-free health server limits aggregate connections and request duration.
+
+The optional [managed-addressing candidate](managed-network.md) adds a root
+network helper with `NET_ADMIN`, `NET_RAW`, and `NET_BIND_SERVICE`. It configures
+only the selected container LAN interface and publishes a short-lived address
+heartbeat to the non-root gateway. Separate credential mounts do not isolate
+shared network traffic: the helper can observe plaintext NUT traffic. It is part
+of the trusted network boundary; it receives no Docker socket or gateway state.
 
 ## Outlet-topology projection
 

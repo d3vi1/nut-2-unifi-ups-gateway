@@ -24,7 +24,7 @@ func TestCrossCompile(t *testing.T) {
 	for _, target := range targets {
 		t.Run(target.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "gateway")
-			cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, "./cmd/nut-2-unifi-ups-gateway")
+			cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out+string(os.PathSeparator), "./cmd/nut-2-unifi-ups-gateway", "./cmd/n2u-netagent")
 			cmd.Dir = root
 			cmd.Env = append(filteredEnv(os.Environ(), "GOOS", "GOARCH", "GOARM", "CGO_ENABLED"),
 				"GOOS=linux", "GOARCH="+target.arch, "GOARM="+target.arm, "CGO_ENABLED=0")

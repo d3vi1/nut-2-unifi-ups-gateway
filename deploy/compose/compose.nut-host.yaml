@@ -1,0 +1,15 @@
+# Optional access to NUT running on the same Docker host.
+# The existing network MUST be a Docker bridge created with --internal.
+# Use its gateway IP for N2U_NUT_ADDRESS; host loopback is not reachable here.
+# NUT must already listen there and permit this container's bridge-side source.
+# Keep the LAN endpoint for discovery/inform; do not add a second default route.
+services:
+  gateway:
+    networks:
+      nut_host:
+        ipv4_address: ${N2U_NUT_HOST_IP:?set the reserved NUT bridge IPv4 address}
+
+networks:
+  nut_host:
+    external: true
+    name: ${N2U_NUT_HOST_NETWORK:?set the existing internal Docker bridge network name}

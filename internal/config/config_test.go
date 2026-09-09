@@ -13,6 +13,9 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if c.Device.NetworkMode != "separate" {
+		t.Fatal("network mode must default to separate")
+	}
 	if c.NUT.Address != "127.0.0.1:3493" || c.NUT.UPSName != "ups" {
 		t.Fatalf("unexpected NUT defaults: %+v", c.NUT)
 	}
@@ -36,6 +39,22 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.Runtime.HealthAddress != "127.0.0.1:9199" {
 		t.Fatalf("unexpected health default %q", c.Runtime.HealthAddress)
+	}
+}
+
+func TestNetworkModeIsClosedAndExplicit(t *testing.T) {
+	for _, mode := range []string{"shared", "separate", "", "host", "auto", "Shared"} {
+		t.Run(mode, func(t *testing.T) {
+			clearEnvironment(t)
+			t.Setenv("N2U_NETWORK_MODE", mode)
+			c, err := Load()
+			if (mode == "shared" || mode == "separate") != (err == nil) {
+				t.Fatal("unexpected network mode acceptance")
+			}
+			if err == nil && c.Device.NetworkMode != mode {
+				t.Fatal("network mode lost")
+			}
+		})
 	}
 }
 

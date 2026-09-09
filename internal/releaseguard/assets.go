@@ -15,11 +15,15 @@ import (
 )
 
 const (
-	maxReleaseAssetSize   = 128 << 20
-	maxExpandedBundleSize = 4 << 20
-	maxBundleMemberSize   = 1 << 20
-	composeSHA256         = "f721038707cb165602cf2afa3a58f985b348c84d7bafc3a250293b4be5dd06c8"
-	composeAuthSHA256     = "4514e6f198ce9227fa409e29c8c99b8a1141284456e4adcb2e4a05c286b0ae40"
+	composeManagedSHA256        = "4502f9621f955182e28838e68dd278409b8b07cdd820848833f76ef2132849c2"
+	composeManagedNUTHostSHA256 = "076dd6d0591074db64139cee9fe0e282ca2a50de2ab4fb4b4f27ac9cf4804178"
+	maxReleaseAssetSize         = 128 << 20
+	maxExpandedBundleSize       = 4 << 20
+	maxBundleMemberSize         = 1 << 20
+	composeSHA256               = "681ff7915757cb08122ab1416f3312d9f200bfbd3f50d4689c0a8deeac1f6b0d"
+	composeAuthSHA256           = "4514e6f198ce9227fa409e29c8c99b8a1141284456e4adcb2e4a05c286b0ae40"
+	composeNUTHostSHA256        = "2e01f9b55668b6842bc797e4a7b566e92f98d77e9e3350e15523cea086f77d18"
+	composeLegacySHA256         = "5da05c693d8cd5bd9831ea653e023d7b4174166876492ad47182937f5ba849de"
 )
 
 type localAsset struct {
@@ -120,11 +124,15 @@ func verifyComposeBundle(release Context, binding bindingInput, compressed []byt
 	tarReader := tar.NewReader(limited)
 	root := fmt.Sprintf("nut-2-unifi-ups-gateway-%s-compose", release.Tag)
 	expected := map[string]byte{
-		root + "/":                     tar.TypeDir,
-		root + "/.env":                 tar.TypeReg,
-		root + "/compose.yaml":         tar.TypeReg,
-		root + "/compose.auth.yaml":    tar.TypeReg,
-		root + "/RELEASE-METADATA.txt": tar.TypeReg,
+		root + "/compose.managed.yaml":          tar.TypeReg,
+		root + "/compose.managed-nut-host.yaml": tar.TypeReg,
+		root + "/":                              tar.TypeDir,
+		root + "/.env":                          tar.TypeReg,
+		root + "/compose.yaml":                  tar.TypeReg,
+		root + "/compose.auth.yaml":             tar.TypeReg,
+		root + "/compose.nut-host.yaml":         tar.TypeReg,
+		root + "/compose.legacy.yaml":           tar.TypeReg,
+		root + "/RELEASE-METADATA.txt":          tar.TypeReg,
 	}
 	contents := make(map[string][]byte, len(expected))
 	seen := make(map[string]struct{}, len(expected))
@@ -191,8 +199,16 @@ func verifyComposeBundle(release Context, binding bindingInput, compressed []byt
 		return err
 	}
 	composeDigest := sha256.Sum256(contents[root+"/compose.yaml"])
+	for name, expected := range map[string]string{"compose.managed.yaml": composeManagedSHA256, "compose.managed-nut-host.yaml": composeManagedNUTHostSHA256} {
+		digest := sha256.Sum256(contents[root+"/"+name])
+		if hex.EncodeToString(digest[:]) != expected {
+			return errors.New("managed Compose files do not match the reviewed release templates")
+		}
+	}
 	composeAuthDigest := sha256.Sum256(contents[root+"/compose.auth.yaml"])
-	if hex.EncodeToString(composeDigest[:]) != composeSHA256 || hex.EncodeToString(composeAuthDigest[:]) != composeAuthSHA256 {
+	composeNUTHostDigest := sha256.Sum256(contents[root+"/compose.nut-host.yaml"])
+	composeLegacyDigest := sha256.Sum256(contents[root+"/compose.legacy.yaml"])
+	if hex.EncodeToString(composeDigest[:]) != composeSHA256 || hex.EncodeToString(composeAuthDigest[:]) != composeAuthSHA256 || hex.EncodeToString(composeNUTHostDigest[:]) != composeNUTHostSHA256 || hex.EncodeToString(composeLegacyDigest[:]) != composeLegacySHA256 {
 		return errors.New("Compose files do not match the reviewed release templates")
 	}
 	expectedMetadata := fmt.Sprintf("Release tag: %s\nSource commit: %s\nImage: %s@%s\nRetention anchor: %s:%s\nWorkflow run: %d (attempt %d)\n", release.Tag, release.SourceSHA, ImageName, binding.digest, ImageName, release.OCITag(), release.RunID, release.RunAttempt)
@@ -217,10 +233,23 @@ func expectedBundleEnvironment(release Context, binding bindingInput) string {
 # Source-tree example for local development and review. The published Compose
 # release bundle replaces this tag with the exact multi-platform OCI digest.
 N2U_IMAGE=%s@%s
-# Same-host NUT: keep loopback and the insecure-remote opt-in disabled.
-# Remote NUT: replace the address, set the correct UPS name, and set the opt-in
-# to true only on a trusted LAN or VPN. NUT traffic is not encrypted.
-N2U_NUT_ADDRESS=127.0.0.1:3493
+# Required: an existing macvlan network and a reserved, unused LAN IPv4 address.
+# Replace the documentation-only IPv4 examples before startup.
+N2U_LAN_NETWORK=
+N2U_DEVICE_IP=192.0.2.20
+# Required: a unique stable unicast MAC. On upgrade, use the adopted device MAC.
+# Preserve the existing state volume; do not create a new identity for migration.
+N2U_DEVICE_MAC=
+# Optional compose.nut-host.yaml overlay: existing Docker bridge with --internal.
+# N2U_NUT_HOST_NETWORK=
+# N2U_NUT_HOST_IP=
+# N2U_NUT_HOST_GATEWAY=
+# Set the reachable server address and actual UPS name. For same-host NUT use
+# the internal bridge gateway address, never 127.0.0.1. Macvlan alone cannot
+# reach its host. NUT must already accept the reserved bridge-side source IP.
+# Non-loopback NUT requires explicitly setting the opt-in below to true, even
+# over the internal bridge. Use a trusted LAN or VPN; NUT traffic is unencrypted.
+N2U_NUT_ADDRESS=192.0.2.10:3493
 N2U_NUT_UPS=ups
 N2U_NUT_TIMEOUT=5s
 N2U_NUT_ALLOW_INSECURE_REMOTE=false
