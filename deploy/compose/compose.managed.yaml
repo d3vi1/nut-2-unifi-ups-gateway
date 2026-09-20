@@ -1,0 +1,102 @@
+# CANDIDATE: managed DHCP/static addressing, Engine 24 / Compose 2.20 or later.
+# Alternate base, NOT an overlay on compose.yaml or compose.legacy.yaml.
+# Requires a dedicated, existing INTERNAL macvlan network, 169.254.254.0/24.
+# Docker owns the bootstrap endpoint; netagent replaces its link-local address.
+# Docker inspect therefore shows the bootstrap address, not the active LAN lease.
+name: nut-2-unifi-ups-gateway
+
+services:
+  netagent:
+    image: "${N2U_IMAGE:?N2U_IMAGE must be set to a verified OCI digest}"
+    entrypoint: ["/n2u-netagent"]
+    user: "0:0"
+    mac_address: ${N2U_DEVICE_MAC:?set the stable gateway identity MAC address}
+    networks:
+      lan:
+        priority: 100
+    read_only: true
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW, NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 32m
+    stop_grace_period: 5s
+    healthcheck:
+      disable: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"
+    volumes:
+      - network_status:/run/n2u-network
+    environment:
+      N2U_NET_MAC: ${N2U_DEVICE_MAC:?set the stable gateway identity MAC address}
+      N2U_NET_MODE: ${N2U_NET_MODE:-dhcp}
+      N2U_NET_STATIC_CIDR: ${N2U_NET_STATIC_CIDR:-}
+      N2U_NET_ROUTER: ${N2U_NET_ROUTER:-}
+
+  gateway:
+    image: "${N2U_IMAGE:?N2U_IMAGE must be set to a verified OCI digest}"
+    container_name: nut-2-unifi-ups-gateway
+    network_mode: service:netagent
+    depends_on: [netagent]
+    user: "65532:65532"
+    read_only: true
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    mem_limit: 64m
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - state:/var/lib/n2u
+      - network_status:/run/n2u-network:ro
+    environment:
+      N2U_NETWORK_MODE: separate
+      N2U_NETWORK_STATUS_FILE: /run/n2u-network/status.json
+      N2U_DEVICE_MAC: ${N2U_DEVICE_MAC:?set the stable gateway identity MAC address}
+      N2U_DEVICE_HOSTNAME: ${N2U_DEVICE_HOSTNAME:-nut-2-unifi-ups-gateway}
+      N2U_DEVICE_SERIAL: ${N2U_DEVICE_SERIAL:-}
+      N2U_NUT_ADDRESS: ${N2U_NUT_ADDRESS:?set the reachable NUT IPv4 address and port}
+      N2U_NUT_UPS: ${N2U_NUT_UPS:-ups}
+      N2U_NUT_TIMEOUT: ${N2U_NUT_TIMEOUT:-5s}
+      N2U_NUT_ALLOW_INSECURE_REMOTE: ${N2U_NUT_ALLOW_INSECURE_REMOTE:-false}
+      N2U_UNIFI_MODEL: ${N2U_UNIFI_MODEL:-USWDA26}
+      N2U_UNIFI_VERSION: ${N2U_UNIFI_VERSION:-1.6.1}
+      N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC: ${N2U_UNIFI_HTTP_GCM_VOLATILE_CFGVERSION_SYNC:-false}
+      N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE: ${N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE:-off}
+      N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC: ${N2U_UNIFI_HTTP_GCM_REPORTED_FIRMWARE_SYNC:-false}
+      N2U_UNIFI_NUT_SERVER_ENABLED: ${N2U_UNIFI_NUT_SERVER_ENABLED:-false}
+      N2U_UNIFI_NUT_SERVER_ID: ${N2U_UNIFI_NUT_SERVER_ID:-ups}
+      N2U_UNIFI_NUT_SERVER_PORT: ${N2U_UNIFI_NUT_SERVER_PORT:-3493}
+      N2U_INFORM_URL: ${N2U_INFORM_URL:?set the controller INFORM URL with an IPv4 literal}
+      N2U_INFORM_INTERVAL: ${N2U_INFORM_INTERVAL:-10s}
+      N2U_INFORM_TIMEOUT: ${N2U_INFORM_TIMEOUT:-10s}
+      N2U_DISCOVERY_INTERVAL: ${N2U_DISCOVERY_INTERVAL:-30s}
+      N2U_POLL_INTERVAL: ${N2U_POLL_INTERVAL:-5s}
+      N2U_STALE_AFTER: ${N2U_STALE_AFTER:-20s}
+      N2U_STATE_FILE: /var/lib/n2u/state.json
+      N2U_HEALTH_ADDRESS: ${N2U_HEALTH_ADDRESS:-127.0.0.1:9199}
+      N2U_LOG_LEVEL: ${N2U_LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "/nut-2-unifi-ups-gateway", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  state:
+  network_status:
+
+networks:
+  lan:
+    external: true
+    name: ${N2U_LAN_NETWORK:?set the dedicated internal bootstrap macvlan network name}

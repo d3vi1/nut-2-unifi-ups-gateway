@@ -20,6 +20,7 @@ import (
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/health"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/model"
+	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/netconfig"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/nut"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/state"
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/unifi/discovery"
@@ -54,6 +55,7 @@ type Gateway struct {
 	monitor             *health.Monitor
 	logger              *slog.Logger
 	network             NetworkIdentity
+	networkGeneration   string
 	now                 func() time.Time
 	saveState           func(string, state.State) error
 	started             time.Time
@@ -236,6 +238,14 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 	if err := configuration.Validate(); err != nil {
 		return nil, err
 	}
+	var networkGeneration string
+	if configuration.Runtime.NetworkStatusFile != "" {
+		s, err := netconfig.ReadStatus(configuration.Runtime.NetworkStatusFile, time.Now())
+		if err != nil || s.Address != configuration.Device.IP {
+			return nil, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("managed address is not current"))
+		}
+		networkGeneration = s.Generation
+	}
 	if _, err := inform.ResolveProfile(inform.DeviceProfile{
 		Model:           configuration.UniFi.Model,
 		FirmwareVersion: configuration.UniFi.Version,
@@ -264,6 +274,34 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		options.Resolver = net.DefaultResolver
 	}
 
+	// Verify the selected LAN interface before creating or updating state. A
+	// MAC exists on the wire, not just in a JSON payload. Test-only Network
+	// observations can supply synthetic identities without touching host NICs.
+	if configuration.Device.NetworkMode != "shared" && configuration.Device.MAC == "" {
+		return nil, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("separate mode requires an explicit stable interface MAC"))
+	}
+	network := options.Network
+	if network == (NetworkIdentity{}) {
+		var err error
+		network, err = localNetworkIdentity(configuration.Device.IP)
+		if err != nil {
+			return nil, err
+		}
+	}
+	requestedMAC := configuration.Device.MAC
+	observedMAC, err := net.ParseMAC(network.MAC)
+	if err != nil || len(observedMAC) != 6 || observedMAC[0]&1 != 0 || observedMAC.String() == "00:00:00:00:00:00" {
+		return nil, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("network interface has no usable Ethernet MAC"))
+	}
+	network.MAC = observedMAC.String()
+	if requestedMAC != "" {
+		configuredMAC, err := net.ParseMAC(requestedMAC)
+		if err != nil || configuredMAC.String() != network.MAC {
+			return nil, diagnostic.Wrap(diagnostic.IdentityMismatch, errors.New("configured device MAC does not match its network interface"))
+		}
+	}
+	requestedMAC = network.MAC
+
 	poller := options.Poller
 	if poller == nil {
 		client, err := nut.New(nut.Config{
@@ -278,18 +316,9 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		}
 		poller = client
 	}
-	controller := options.Controller
-	if controller == nil {
-		var err error
-		controller, err = NewHTTPController(configuration.UniFi.InformTimeout)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	persistent, err := state.LoadOrCreate(
 		configuration.Runtime.StateFile,
-		configuration.Device.MAC,
+		requestedMAC,
 		configuration.Device.Serial,
 		configuration.UniFi.InformURL,
 		inform.DefaultKey,
@@ -301,15 +330,22 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		return nil, err
 	}
 
-	network := options.Network
-	if network == (NetworkIdentity{}) {
-		network, err = ResolveNetworkIdentity(ctx, configuration.Device.IP, persistent.Adoption.InformURL, options.Resolver)
+	if network.InformIP == "" {
+		controllerIP, err := controllerIPv4(ctx, persistent.Adoption.InformURL, options.Resolver)
 		if err != nil {
 			return nil, err
 		}
+		network.InformIP = controllerIP.String()
 	}
 	if net.ParseIP(network.DeviceIP).To4() == nil || net.ParseIP(network.InformIP).To4() == nil || net.ParseIP(network.Netmask).To4() == nil {
 		return nil, errors.New("gateway network identity requires IPv4 values")
+	}
+	controller := options.Controller
+	if controller == nil {
+		controller, err = newBoundHTTPController(configuration.UniFi.InformTimeout, network.DeviceIP, network.InformIP)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	hardwareAddress, err := net.ParseMAC(persistent.Identity.MAC)
@@ -334,6 +370,7 @@ func New(ctx context.Context, configuration config.Config, options Options) (*Ga
 		monitor:             options.Monitor,
 		logger:              options.Logger,
 		network:             network,
+		networkGeneration:   networkGeneration,
 		now:                 options.Now,
 		saveState:           options.SaveState,
 		saveReceipt:         options.SaveReceipt,
@@ -382,6 +419,9 @@ func (g *Gateway) PollOnce(ctx context.Context) error {
 // TNBU exchange. Controller state is committed only after endpoint-transition
 // authorization and a successful atomic state-file replacement.
 func (g *Gateway) InformOnce(ctx context.Context) (inform.Outcome, error) {
+	if !g.managedNetworkCurrent() {
+		return inform.Outcome{}, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("managed address is not current"))
+	}
 	g.informMu.Lock()
 	defer g.informMu.Unlock()
 
@@ -718,6 +758,9 @@ func (g *Gateway) announcementLoop(ctx context.Context, writer discovery.PacketW
 	ticker := time.NewTicker(g.configuration.UniFi.DiscoveryInterval)
 	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil || !g.managedNetworkCurrent() {
+			return
+		}
 		announcement, err := g.discoveryAnnouncement(discovery.V2, discovery.CommandAnnouncement)
 		if err == nil {
 			var packet []byte
@@ -740,6 +783,14 @@ func (g *Gateway) announcementLoop(ctx context.Context, writer discovery.PacketW
 		case <-ticker.C:
 		}
 	}
+}
+
+func (g *Gateway) managedNetworkCurrent() bool {
+	if g.configuration.Runtime.NetworkStatusFile == "" {
+		return true
+	}
+	s, err := netconfig.ReadStatus(g.configuration.Runtime.NetworkStatusFile, time.Now())
+	return err == nil && s.Address == g.network.DeviceIP && s.Generation == g.networkGeneration
 }
 
 func (g *Gateway) discoveryAnnouncement(version discovery.Version, command uint8) (discovery.Announcement, error) {

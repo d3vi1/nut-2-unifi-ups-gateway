@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"sort"
-	"strconv"
 	"syscall"
 
 	"github.com/d3vi1/nut-2-unifi-ups-gateway/internal/diagnostic"
@@ -17,46 +16,37 @@ type NetworkIdentity struct {
 	DeviceIP string
 	InformIP string
 	Netmask  string
+	MAC      string
 }
 
-// ResolveNetworkIdentity resolves the controller and asks the kernel which
-// local IPv4 route it would use. DialUDP performs route selection without
-// transmitting a datagram.
+// ResolveNetworkIdentity resolves the controller and verifies an explicitly
+// selected local IPv4 interface. It never invents an IP, mask, or Ethernet MAC.
 func ResolveNetworkIdentity(ctx context.Context, configuredIP, informURL string, resolver Resolver) (NetworkIdentity, error) {
+	controllerIP, err := controllerIPv4(ctx, informURL, resolver)
+	if err != nil {
+		return NetworkIdentity{}, err
+	}
+	identity, err := localNetworkIdentity(configuredIP)
+	if err != nil {
+		return NetworkIdentity{}, err
+	}
+	identity.InformIP = controllerIP.String()
+	return identity, nil
+}
+
+func controllerIPv4(ctx context.Context, informURL string, resolver Resolver) (net.IP, error) {
 	if resolver == nil {
 		resolver = net.DefaultResolver
 	}
 	u, err := parseControllerURL(informURL)
 	if err != nil {
-		return NetworkIdentity{}, err
+		return nil, err
 	}
 	controllerIP, err := resolveIPv4(ctx, resolver, u.Hostname())
 	if err != nil {
-		return NetworkIdentity{}, diagnostic.Wrap(diagnostic.ControllerDNS, errors.New("controller has no usable IPv4 address"))
+		return nil, diagnostic.Wrap(diagnostic.ControllerDNS, errors.New("controller has no usable IPv4 address"))
 	}
-	deviceIP := net.ParseIP(configuredIP).To4()
-	if configuredIP == "" {
-		port, err := strconv.Atoi(effectivePort(u))
-		if err != nil {
-			return NetworkIdentity{}, errors.New("controller has an invalid port")
-		}
-		deviceIP, err = routeLocalIPv4(controllerIP, port)
-		if err != nil {
-			return NetworkIdentity{}, diagnostic.Wrap(diagnostic.ControllerRoute, err)
-		}
-	}
-	if deviceIP == nil || deviceIP.IsUnspecified() || deviceIP.IsMulticast() {
-		return NetworkIdentity{}, errors.New("device has no usable IPv4 address")
-	}
-	mask := net.IPv4(255, 255, 255, 255)
-	if discovered := interfaceNetmask(deviceIP); discovered != nil {
-		mask = discovered
-	}
-	return NetworkIdentity{
-		DeviceIP: deviceIP.String(),
-		InformIP: controllerIP.String(),
-		Netmask:  mask.String(),
-	}, nil
+	return controllerIP, nil
 }
 
 func resolveIPv4(ctx context.Context, resolver Resolver, host string) (net.IP, error) {
@@ -80,41 +70,71 @@ func resolveIPv4(ctx context.Context, resolver Resolver, host string) (net.IP, e
 	return net.ParseIP(candidates[0]).To4(), nil
 }
 
-func routeLocalIPv4(controllerIP net.IP, port int) (net.IP, error) {
-	connection, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: controllerIP, Port: port})
-	if err != nil {
-		return nil, errors.New("derive local IPv4 route")
-	}
-	defer connection.Close()
-	local, ok := connection.LocalAddr().(*net.UDPAddr)
-	if !ok || local.IP.To4() == nil {
-		return nil, errors.New("route did not select a local IPv4 address")
-	}
-	return append(net.IP(nil), local.IP.To4()...), nil
+type interfaceObservation struct {
+	flags net.Flags
+	mac   net.HardwareAddr
+	addrs []net.Addr
 }
 
-func interfaceNetmask(ip net.IP) net.IP {
+// localNetworkIdentity reads interface metadata only: no raw socket, Docker
+// socket, network mutation, or elevated capability is needed. Local consistency
+// does not prove LAN-wide uniqueness or absence of external NAT; those remain
+// explicit deployment requirements.
+func localNetworkIdentity(configuredIP string) (NetworkIdentity, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return nil
+		return NetworkIdentity{}, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("read network interfaces"))
 	}
+	observations := make([]interfaceObservation, 0, len(interfaces))
 	for _, networkInterface := range interfaces {
-		if networkInterface.Flags&net.FlagUp == 0 {
-			continue
-		}
 		addresses, err := networkInterface.Addrs()
 		if err != nil {
-			continue
+			return NetworkIdentity{}, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("read interface addresses"))
 		}
-		for _, address := range addresses {
+		observations = append(observations, interfaceObservation{networkInterface.Flags, networkInterface.HardwareAddr, addresses})
+	}
+	return selectLocalNetworkIdentity(configuredIP, observations)
+}
+
+func selectLocalNetworkIdentity(configuredIP string, interfaces []interfaceObservation) (NetworkIdentity, error) {
+	fail := func() (NetworkIdentity, error) {
+		return NetworkIdentity{}, diagnostic.Wrap(diagnostic.NetworkIdentityInvalid, errors.New("device IP requires one active Ethernet interface with a valid address, mask, and MAC"))
+	}
+	ip := net.ParseIP(configuredIP).To4()
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return fail()
+	}
+	var identity NetworkIdentity
+	matches := 0
+	for _, iface := range interfaces {
+		for _, address := range iface.addrs {
 			ipNetwork, ok := address.(*net.IPNet)
-			if !ok || !ipNetwork.IP.Equal(ip) || len(ipNetwork.Mask) != net.IPv4len {
+			if !ok || !ipNetwork.IP.Equal(ip) {
 				continue
 			}
-			return append(net.IP(nil), ipNetwork.Mask...)
+			matches++
+			ones, bits := ipNetwork.Mask.Size()
+			if iface.flags&net.FlagUp == 0 || iface.flags&net.FlagLoopback != 0 ||
+				iface.flags&net.FlagBroadcast == 0 || len(iface.mac) != 6 || iface.mac[0]&1 != 0 ||
+				iface.mac.String() == "00:00:00:00:00:00" || bits != 32 || ones < 1 || ones > 30 {
+				return fail()
+			}
+			mask := ipNetwork.Mask
+			network := ip.Mask(mask)
+			broadcast := append(net.IP(nil), network...)
+			for i := range broadcast {
+				broadcast[i] |= ^mask[i]
+			}
+			if ip.Equal(network) || ip.Equal(broadcast) {
+				return fail()
+			}
+			identity = NetworkIdentity{DeviceIP: ip.String(), Netmask: net.IP(mask).String(), MAC: iface.mac.String()}
 		}
 	}
-	return nil
+	if matches != 1 {
+		return fail()
+	}
+	return identity, nil
 }
 
 // openDiscoveryBroadcaster mirrors the UPS firmware's send-only discovery

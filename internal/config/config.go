@@ -64,17 +64,19 @@ type NUTServerAdvertisement struct {
 }
 
 type Device struct {
-	MAC      string
-	Serial   string
-	Hostname string
-	IP       string
+	NetworkMode string
+	MAC         string
+	Serial      string
+	Hostname    string
+	IP          string
 }
 
 type Runtime struct {
-	StateFile     string
-	HealthAddress string
-	PollInterval  time.Duration
-	StaleAfter    time.Duration
+	NetworkStatusFile string
+	StateFile         string
+	HealthAddress     string
+	PollInterval      time.Duration
+	StaleAfter        time.Duration
 }
 
 // Load reads configuration from the process environment.
@@ -100,14 +102,16 @@ func Load() (Config, error) {
 			},
 		},
 		Device: Device{
-			MAC:      os.Getenv("N2U_DEVICE_MAC"),
-			Serial:   os.Getenv("N2U_DEVICE_SERIAL"),
-			Hostname: value("N2U_DEVICE_HOSTNAME", "nut-2-unifi-ups-gateway"),
-			IP:       os.Getenv("N2U_DEVICE_IP"),
+			NetworkMode: value("N2U_NETWORK_MODE", "separate"),
+			MAC:         os.Getenv("N2U_DEVICE_MAC"),
+			Serial:      os.Getenv("N2U_DEVICE_SERIAL"),
+			Hostname:    value("N2U_DEVICE_HOSTNAME", "nut-2-unifi-ups-gateway"),
+			IP:          os.Getenv("N2U_DEVICE_IP"),
 		},
 		Runtime: Runtime{
-			StateFile:     value("N2U_STATE_FILE", "/var/lib/n2u/state.json"),
-			HealthAddress: value("N2U_HEALTH_ADDRESS", "127.0.0.1:9199"),
+			NetworkStatusFile: os.Getenv("N2U_NETWORK_STATUS_FILE"),
+			StateFile:         value("N2U_STATE_FILE", "/var/lib/n2u/state.json"),
+			HealthAddress:     value("N2U_HEALTH_ADDRESS", "127.0.0.1:9199"),
 		},
 		LogLevel: strings.ToLower(value("N2U_LOG_LEVEL", "info")),
 	}
@@ -148,6 +152,12 @@ func Load() (Config, error) {
 	if err := rejectUnknownEnvironment(); err != nil {
 		return Config{}, err
 	}
+	if c.Device.NetworkMode == "" {
+		return Config{}, errors.New("N2U_NETWORK_MODE must be shared or separate")
+	}
+	if c.Runtime.NetworkStatusFile != "" && c.Device.IP != "" {
+		return Config{}, errors.New("managed addressing must not set N2U_DEVICE_IP")
+	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -155,6 +165,23 @@ func Load() (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.Runtime.NetworkStatusFile != "" {
+		if c.Runtime.NetworkStatusFile != "/run/n2u-network/status.json" || c.Device.NetworkMode != "separate" || c.Device.MAC == "" {
+			return errors.New("managed addressing requires separate mode and a stable MAC")
+		}
+		// v0.9.1 does not consume DHCP DNS options or edit Docker resolv.conf.
+		// Literal targets avoid silently using an unrelated resolver/route.
+		host, _, err := net.SplitHostPort(c.NUT.Address)
+		u, urlErr := url.Parse(c.UniFi.InformURL)
+		if err != nil || net.ParseIP(host).To4() == nil || urlErr != nil || net.ParseIP(u.Hostname()).To4() == nil {
+			return errors.New("managed addressing requires IPv4 literal NUT and controller targets")
+		}
+	}
+	switch c.Device.NetworkMode {
+	case "", "shared", "separate":
+	default:
+		return errors.New("N2U_NETWORK_MODE must be shared or separate")
+	}
 	if c.UniFi.ReportedFirmwareSync && c.UniFi.ConfigReceiptMode != "persistent" {
 		return errors.New("reported firmware synchronization requires persistent configuration receipts")
 	}
@@ -225,7 +252,7 @@ func (c Config) Validate() error {
 	}
 	if c.Device.MAC != "" {
 		hw, err := net.ParseMAC(c.Device.MAC)
-		if err != nil || len(hw) != 6 || hw[0]&1 != 0 {
+		if err != nil || len(hw) != 6 || hw[0]&1 != 0 || hw.String() == "00:00:00:00:00:00" {
 			return errors.New("N2U_DEVICE_MAC must be a six-byte unicast MAC address")
 		}
 	}
@@ -346,6 +373,8 @@ func loopbackHost(host string) bool {
 }
 
 var knownEnvironment = map[string]struct{}{
+	"N2U_NETWORK_STATUS_FILE":                {},
+	"N2U_NETWORK_MODE":                       {},
 	"N2U_UNIFI_HTTP_GCM_CONFIG_RECEIPT_MODE": {},
 	"N2U_NUT_ADDRESS":                        {}, "N2U_NUT_UPS": {}, "N2U_NUT_USERNAME": {},
 	"N2U_NUT_PASSWORD": {}, "N2U_NUT_PASSWORD_FILE": {}, "N2U_NUT_TIMEOUT": {},

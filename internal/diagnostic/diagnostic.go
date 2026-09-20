@@ -34,6 +34,7 @@ const (
 	NUTTelemetry
 	HealthBind
 	DiscoveryBind
+	NetworkIdentityInvalid
 )
 
 var names = [...]string{
@@ -42,7 +43,7 @@ var names = [...]string{
 	"controller_route", "controller_transport", "controller_timeout",
 	"controller_http", "controller_protocol", "controller_replay", "nut_dns",
 	"nut_connect", "nut_timeout", "nut_auth", "nut_unknown_ups", "nut_unavailable",
-	"nut_protocol", "nut_telemetry", "health_bind", "discovery_bind",
+	"nut_protocol", "nut_telemetry", "health_bind", "discovery_bind", "network_identity_invalid",
 }
 
 func (c Code) String() string {

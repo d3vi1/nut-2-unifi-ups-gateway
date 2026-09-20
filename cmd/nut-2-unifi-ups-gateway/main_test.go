@@ -61,8 +61,9 @@ func TestStartupErrorsUseSafeReasons(t *testing.T) {
 			t.Setenv("N2U_STATE_FILE", path)
 			t.Setenv("N2U_INFORM_URL", "http://127.0.0.1:8080/inform")
 			var stdout, stderr bytes.Buffer
-			if run(context.Background(), nil, &stdout, &stderr) != 1 || !strings.Contains(stderr.String(), `"reason":"`+tt.reason+`"`) || strings.Contains(stderr.String(), "secret") || strings.Contains(stderr.String(), "private") {
-				t.Fatal("state diagnostic leaked or lost its reason")
+			// Missing network identity is rejected before opening the state file.
+			if run(context.Background(), nil, &stdout, &stderr) != 1 || !strings.Contains(stderr.String(), `"reason":"network_identity_invalid"`) || strings.Contains(stderr.String(), "secret") || strings.Contains(stderr.String(), "private") {
+				t.Fatal("network preflight diagnostic leaked or lost its reason")
 			}
 		})
 	}

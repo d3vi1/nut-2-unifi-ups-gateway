@@ -1,4 +1,4 @@
-# Shared Linux macvlan deployment; Docker Compose 2.23.2 or later.
+# Alternate base for Docker Engine 24 and Compose 2.20.x; do not merge with compose.yaml.
 # Keep this project name stable to preserve identity.
 name: nut-2-unifi-ups-gateway
 
@@ -6,10 +6,11 @@ services:
   gateway:
     image: "${N2U_IMAGE:?N2U_IMAGE must be set to a verified OCI digest}"
     container_name: nut-2-unifi-ups-gateway
+    mac_address: ${N2U_DEVICE_MAC:?set the stable gateway identity MAC address}
     networks:
       lan:
+        priority: 100
         ipv4_address: ${N2U_DEVICE_IP:?set the reserved gateway LAN IPv4 address}
-        mac_address: ${N2U_DEVICE_MAC:?set the stable gateway identity MAC address}
     user: "65532:65532"
     read_only: true
     restart: unless-stopped

@@ -65,12 +65,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: level}))
+	if configuration.Runtime.NetworkStatusFile != "" {
+		return runManaged(ctx, configuration, logger)
+	}
 	service, err := gateway.New(ctx, configuration, gateway.Options{Logger: logger})
 	if err != nil {
 		logger.Error("gateway initialization failed", "reason", diagnostic.Reason(err, diagnostic.Internal))
 		return 1
 	}
-	logger.Info("gateway started", "version", version, "model", configuration.UniFi.Model)
+	logger.Info("gateway started", "version", version, "model", configuration.UniFi.Model, "network_mode", configuration.Device.NetworkMode)
 	if err := service.Run(ctx); err != nil {
 		logger.Error("gateway stopped unexpectedly", "reason", diagnostic.Reason(err, diagnostic.Internal))
 		return 1

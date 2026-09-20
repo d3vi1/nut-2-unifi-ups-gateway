@@ -76,8 +76,14 @@ administer. Coordinate any live power-path test with the operator.
 - A controller response cannot change the configured inform origin; DNS aliases
   are not treated as equivalent.
 - Persistent adoption state is owner-readable only and atomically replaced.
-- The release image declares a non-root user; the supplied Compose deployment
-  drops every capability and is read-only apart from its private state volume.
+- The release image defaults to a non-root user. The gateway service drops every
+  capability and is read-only apart from its private state volume. The optional
+  managed-addressing template adds a separate root network agent with only
+  NET_ADMIN, NET_RAW and NET_BIND_SERVICE. It receives neither gateway state nor
+  NUT credentials. DHCP and ARP are untrusted inputs; invalid leases, address
+  conflicts, lost helper liveness and stale address handoffs must fail closed.
+  No controller response may authorize network reconfiguration. This candidate
+  requires exact-platform validation before production use.
 - Tagged releases provide an attested multi-platform OCI digest and a
   checksum-verified deployment bundle pinned to that digest. The supplied
   Compose file refuses to render without an explicit `N2U_IMAGE`.

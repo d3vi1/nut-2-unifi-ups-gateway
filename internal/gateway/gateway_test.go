@@ -91,7 +91,7 @@ func TestCycleWithFakeNUTAndHTTPControllerPersistsAdoption(t *testing.T) {
 	monitor := health.New(configuration.Runtime.StaleAfter)
 	service, err := New(context.Background(), configuration, Options{
 		Monitor: monitor,
-		Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+		Network: NetworkIdentity{DeviceIP: "127.0.0.1", InformIP: "127.0.0.1", Netmask: "255.0.0.0", MAC: "02:11:22:33:44:55"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -981,7 +981,7 @@ func TestInvalidOrFailedPollNeverReusesPriorTelemetry(t *testing.T) {
 			poller := &sequencePoller{snapshots: test.snapshots, errors: test.errors}
 			service, err := New(context.Background(), configuration, Options{
 				Poller: poller, Controller: controller, Now: func() time.Time { return now },
-				Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+				Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0", MAC: "02:11:22:33:44:55"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -1015,7 +1015,7 @@ func TestSkippedInformPreservesLastControllerReachability(t *testing.T) {
 		Controller: controller,
 		Monitor:    monitor,
 		Now:        func() time.Time { return now },
-		Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+		Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0", MAC: "02:11:22:33:44:55"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1083,7 +1083,7 @@ func TestHTTPInformResponseClassificationUpdatesHealth(t *testing.T) {
 				Controller: controller,
 				Monitor:    monitor,
 				Now:        func() time.Time { return now },
-				Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+				Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0", MAC: "02:11:22:33:44:55"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -1145,7 +1145,7 @@ func TestPollingContinuesWhileControllerExchangeIsBlocked(t *testing.T) {
 	}
 	service, err := New(context.Background(), configuration, Options{
 		Poller: poller, Controller: controller, Now: time.Now,
-		Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+		Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0", MAC: "02:11:22:33:44:55"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1216,7 +1216,7 @@ func TestUnprovenControllerWritesNeverReachNUT(t *testing.T) {
 		}}
 		service, err := New(context.Background(), configuration, Options{
 			Poller: poller, Controller: &encodedController{payload: []byte(response.body)}, Now: func() time.Time { return now },
-			Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+			Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0", MAC: "02:11:22:33:44:55"},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -1253,7 +1253,7 @@ func TestControllerCannotChangeLocalInformInterval(t *testing.T) {
 		}}},
 		Controller: &encodedController{payload: []byte(`{"_type":"noop","interval":86400}`)},
 		Now:        func() time.Time { return now },
-		Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+		Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0", MAC: "02:11:22:33:44:55"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1273,7 +1273,7 @@ func TestDiscoveryIdentityIsStableAndReflectsAdoption(t *testing.T) {
 	configuration.UniFi.Version = "1.6.1"
 	service, err := New(context.Background(), configuration, Options{
 		Poller: &sequencePoller{}, Controller: &encodedController{payload: []byte(`{"_type":"noop"}`)},
-		Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+		Network: NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0", MAC: "02:11:22:33:44:55"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1392,7 +1392,7 @@ func newReplayTestGateway(t *testing.T, configuration config.Config, now time.Ti
 		}}},
 		Controller: controller,
 		Now:        func() time.Time { return now },
-		Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0"},
+		Network:    NetworkIdentity{DeviceIP: "192.0.2.20", InformIP: "192.0.2.10", Netmask: "255.255.255.0", MAC: "02:11:22:33:44:55"},
 		SaveState:  saveState,
 	}
 	service, err := New(context.Background(), configuration, options)

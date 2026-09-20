@@ -19,6 +19,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -buildvcs=false \
       -ldflags="-s -w -X main.version=$VERSION -X main.revision=$REVISION -X main.buildDate=$BUILD_DATE" \
       -o /out/nut-2-unifi-ups-gateway ./cmd/nut-2-unifi-ups-gateway && \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" GOARM="${TARGETVARIANT#v}" \
+    go build -trimpath -buildvcs=false -ldflags="-s -w" \
+      -o /out/n2u-netagent ./cmd/n2u-netagent && \
     mkdir -p /out/state
 
 FROM scratch
@@ -38,6 +41,7 @@ LABEL org.opencontainers.image.title="NUT 2 UniFi UPS Gateway" \
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chown=65532:65532 /out/state /var/lib/n2u
 COPY --from=build --chown=65532:65532 /out/nut-2-unifi-ups-gateway /nut-2-unifi-ups-gateway
+COPY --from=build --chown=65532:65532 /out/n2u-netagent /n2u-netagent
 COPY LICENSE /licenses/GPL-2.0-only.txt
 
 USER 65532:65532
